@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from datetime import datetime
+from datetime import datetime, timedelta  # <--- AGREGAMOS TIMEDELTA
 import time
-import extra_streamlit_components as stx # <--- LIBRERÍA NUEVA PARA COOKIES
+import extra_streamlit_components as stx
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Grupo Koriel ERP", page_icon="⚡", layout="wide")
@@ -25,14 +25,14 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- GESTOR DE COOKIES (MEMORIA DE NAVEGADOR) ---
-# Esto permite guardar la sesión aunque refresques la página
+# --- GESTOR DE COOKIES ---
+@st.cache_resource(experimental_allow_widgets=True)
 def get_manager():
     return stx.CookieManager()
 
 cookie_manager = get_manager()
 
-# --- USUARIOS (Hardcoded por simplicidad) ---
+# --- USUARIOS ---
 USUARIOS = {
     "admin": "admin123",
     "jorge": "1234",
@@ -53,18 +53,18 @@ def cargar_tabla(tabla):
 def actualizar_prestamo(id_p, cant, total):
     supabase.table("prestamos").update({"cantidad_pendiente": cant, "total_pendiente": total}).eq("id", id_p).execute()
 
-# --- LOGIN CON COOKIES ---
+# --- LOGIN CON COOKIES (CORREGIDO) ---
 def check_login():
-    # 1. Intentar leer la cookie del navegador
+    # 1. Intentar leer la cookie
     cookie_usuario = cookie_manager.get(cookie="koriel_user")
     
-    # 2. Si la cookie existe, iniciamos sesión automáticamente
+    # 2. Si existe, loguear
     if cookie_usuario:
         if "usuario_logueado" not in st.session_state or st.session_state["usuario_logueado"] is None:
             st.session_state["usuario_logueado"] = cookie_usuario
         return True
     
-    # 3. Si no hay cookie, mostramos pantalla de login
+    # 3. Si no, mostrar login
     st.session_state["usuario_logueado"] = None
     
     st.markdown("<h1 style='text-align: center;'>🔐 GRUPO KORIEL CLOUD</h1>", unsafe_allow_html=True)
@@ -75,11 +75,13 @@ def check_login():
         
         if st.button("Ingresar", use_container_width=True):
             if user in USUARIOS and USUARIOS[user] == password:
-                # A: Guardar en memoria de sesión
                 st.session_state["usuario_logueado"] = user
-                # B: GUARDAR LA COOKIE (Para que no se borre al refrescar)
-                # Expira en 30 días
-                cookie_manager.set("koriel_user", user, expires_at=datetime.now().timestamp() + 2592000)
+                
+                # --- AQUÍ ESTABA EL ERROR, YA CORREGIDO ---
+                # Usamos timedelta(days=30) en lugar de timestamp
+                fecha_expiracion = datetime.now() + timedelta(days=30)
+                cookie_manager.set("koriel_user", user, expires_at=fecha_expiracion)
+                # ------------------------------------------
                 
                 st.success(f"Bienvenido {user}")
                 time.sleep(0.5)
@@ -88,11 +90,9 @@ def check_login():
                 st.error("Acceso denegado")
     return False
 
-# --- LOGOUT (Cerrar Sesión) ---
+# --- LOGOUT ---
 def logout():
-    # Borrar la cookie
     cookie_manager.delete("koriel_user")
-    # Borrar la sesión
     st.session_state["usuario_logueado"] = None
     st.rerun()
 
@@ -107,7 +107,6 @@ def main_app():
         st.divider()
         menu = st.radio("Menú", ["📍 Rutas y Cobro", "📦 Nuevo Préstamo", "🛠️ Administración", "📊 Reportes"])
         st.divider()
-        # Botón de Logout modificado
         if st.button("Cerrar Sesión"):
             logout()
 
@@ -118,7 +117,7 @@ def main_app():
     except:
         df_cli, df_prod = pd.DataFrame(), pd.DataFrame()
 
-    # --- LÓGICA DE PESTAÑAS (Resumida para ahorrar espacio, es igual a la v5) ---
+    # --- PESTAÑAS ---
     
     if menu == "📍 Rutas y Cobro":
         st.title("📍 Cobranza en Campo")
@@ -128,13 +127,12 @@ def main_app():
             clientes = df_pend["cliente"].unique()
             if len(clientes) > 0:
                 sel = st.selectbox("Cliente", clientes)
-                # Info Cliente
+                
                 if not df_cli.empty:
                     info = df_cli[df_cli["nombre"] == sel]
                     if not info.empty:
                         st.info(f"🏠 {info.iloc[0].get('tienda','-')} | 📍 {info.iloc[0].get('direccion','-')}")
                 
-                # Editor
                 datos = df_pend[df_pend["cliente"] == sel].copy()
                 datos["Cobrar"], datos["Devolver"] = 0, 0
                 
@@ -174,9 +172,10 @@ def main_app():
         st.title("📦 Registrar Salida")
         c1, c2 = st.columns(2)
         with c1:
-            cli = st.selectbox("Cliente", df_cli["nombre"].unique() if not df_cli.empty else [])
-            prod = st.selectbox("Producto", df_prod["nombre"].unique() if not df_prod.empty else [])
-            # Precio
+            cli_list = df_cli["nombre"].unique() if not df_cli.empty else []
+            prod_list = df_prod["nombre"].unique() if not df_prod.empty else []
+            cli = st.selectbox("Cliente", cli_list)
+            prod = st.selectbox("Producto", prod_list)
             pb = 0.0
             if not df_prod.empty and prod:
                  px = df_prod[df_prod["nombre"] == prod]
@@ -215,6 +214,5 @@ def main_app():
             st.metric("Total Histórico", f"${tot:,.2f}")
 
 # --- INICIO ---
-# Primero cargamos el gestor, luego verificamos
 if check_login():
     main_app()
