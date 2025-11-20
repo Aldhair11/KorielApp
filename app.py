@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from datetime import datetime, timedelta  # <--- AGREGAMOS TIMEDELTA
+from datetime import datetime, timedelta
 import time
 import extra_streamlit_components as stx
 
@@ -25,8 +25,9 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- GESTOR DE COOKIES ---
-@st.cache_resource(experimental_allow_widgets=True)
+# --- GESTOR DE COOKIES (CORREGIDO AQUÍ) ---
+# Quitamos el argumento que daba error. @st.cache_resource debe ir solo.
+@st.cache_resource
 def get_manager():
     return stx.CookieManager()
 
@@ -47,24 +48,25 @@ def insertar_registro(tabla, datos):
         st.error(f"Error guardando datos: {e}")
 
 def cargar_tabla(tabla):
-    response = supabase.table(tabla).select("*").execute()
-    return pd.DataFrame(response.data)
+    try:
+        response = supabase.table(tabla).select("*").execute()
+        return pd.DataFrame(response.data)
+    except:
+        return pd.DataFrame()
 
 def actualizar_prestamo(id_p, cant, total):
     supabase.table("prestamos").update({"cantidad_pendiente": cant, "total_pendiente": total}).eq("id", id_p).execute()
 
-# --- LOGIN CON COOKIES (CORREGIDO) ---
+# --- LOGIN CON COOKIES ---
 def check_login():
-    # 1. Intentar leer la cookie
+    time.sleep(0.1) # Pequeña pausa para asegurar carga de cookie
     cookie_usuario = cookie_manager.get(cookie="koriel_user")
     
-    # 2. Si existe, loguear
     if cookie_usuario:
         if "usuario_logueado" not in st.session_state or st.session_state["usuario_logueado"] is None:
             st.session_state["usuario_logueado"] = cookie_usuario
         return True
     
-    # 3. Si no, mostrar login
     st.session_state["usuario_logueado"] = None
     
     st.markdown("<h1 style='text-align: center;'>🔐 GRUPO KORIEL CLOUD</h1>", unsafe_allow_html=True)
@@ -77,11 +79,9 @@ def check_login():
             if user in USUARIOS and USUARIOS[user] == password:
                 st.session_state["usuario_logueado"] = user
                 
-                # --- AQUÍ ESTABA EL ERROR, YA CORREGIDO ---
-                # Usamos timedelta(days=30) en lugar de timestamp
-                fecha_expiracion = datetime.now() + timedelta(days=30)
-                cookie_manager.set("koriel_user", user, expires_at=fecha_expiracion)
-                # ------------------------------------------
+                # Guardar cookie por 30 días
+                exp = datetime.now() + timedelta(days=30)
+                cookie_manager.set("koriel_user", user, expires_at=exp)
                 
                 st.success(f"Bienvenido {user}")
                 time.sleep(0.5)
@@ -100,7 +100,6 @@ def logout():
 def main_app():
     usuario_actual = st.session_state["usuario_logueado"]
     
-    # Sidebar
     with st.sidebar:
         st.title("🏢 KORIEL CLOUD")
         st.write(f"👤 **{usuario_actual.upper()}**")
@@ -110,15 +109,11 @@ def main_app():
         if st.button("Cerrar Sesión"):
             logout()
 
-    # Cargar datos básicos
-    try:
-        df_cli = cargar_tabla("clientes")
-        df_prod = cargar_tabla("productos")
-    except:
-        df_cli, df_prod = pd.DataFrame(), pd.DataFrame()
+    # Cargar datos
+    df_cli = cargar_tabla("clientes")
+    df_prod = cargar_tabla("productos")
 
     # --- PESTAÑAS ---
-    
     if menu == "📍 Rutas y Cobro":
         st.title("📍 Cobranza en Campo")
         df_pend = cargar_tabla("prestamos")
@@ -213,6 +208,5 @@ def main_app():
             tot = h[h["tipo"]=="COBRO"]["monto_operacion"].sum()
             st.metric("Total Histórico", f"${tot:,.2f}")
 
-# --- INICIO ---
 if check_login():
     main_app()
