@@ -16,7 +16,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- CONEXIÓN SUPABASE ---
+# --- CONEXIÓN SUPABASE (ESTO SÍ SE PUEDE CACHEAR) ---
 @st.cache_resource
 def init_connection():
     url = st.secrets["SUPABASE_URL"]
@@ -25,9 +25,8 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- GESTOR DE COOKIES (CORREGIDO AQUÍ) ---
-# Quitamos el argumento que daba error. @st.cache_resource debe ir solo.
-@st.cache_resource
+# --- GESTOR DE COOKIES (CORREGIDO: SIN CACHÉ) ---
+# Eliminamos @st.cache_resource aquí porque Streamlit ya no permite cachear widgets
 def get_manager():
     return stx.CookieManager()
 
@@ -59,8 +58,11 @@ def actualizar_prestamo(id_p, cant, total):
 
 # --- LOGIN CON COOKIES ---
 def check_login():
-    time.sleep(0.1) # Pequeña pausa para asegurar carga de cookie
+    # Intentamos obtener la cookie
     cookie_usuario = cookie_manager.get(cookie="koriel_user")
+    
+    # Pequeña pausa técnica para asegurar lectura
+    time.sleep(0.1)
     
     if cookie_usuario:
         if "usuario_logueado" not in st.session_state or st.session_state["usuario_logueado"] is None:
@@ -79,7 +81,7 @@ def check_login():
             if user in USUARIOS and USUARIOS[user] == password:
                 st.session_state["usuario_logueado"] = user
                 
-                # Guardar cookie por 30 días
+                # Crear Cookie que expira en 30 días
                 exp = datetime.now() + timedelta(days=30)
                 cookie_manager.set("koriel_user", user, expires_at=exp)
                 
@@ -94,6 +96,7 @@ def check_login():
 def logout():
     cookie_manager.delete("koriel_user")
     st.session_state["usuario_logueado"] = None
+    time.sleep(0.5) # Dar tiempo a borrar cookie
     st.rerun()
 
 # --- APP PRINCIPAL ---
@@ -208,5 +211,6 @@ def main_app():
             tot = h[h["tipo"]=="COBRO"]["monto_operacion"].sum()
             st.metric("Total Histórico", f"${tot:,.2f}")
 
+# --- INICIO ---
 if check_login():
     main_app()
