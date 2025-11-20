@@ -16,7 +16,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- CONEXIÓN SUPABASE (ESTO SÍ SE PUEDE CACHEAR) ---
+# --- CONEXIÓN SUPABASE ---
 @st.cache_resource
 def init_connection():
     url = st.secrets["SUPABASE_URL"]
@@ -25,8 +25,7 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- GESTOR DE COOKIES (CORREGIDO: SIN CACHÉ) ---
-# Eliminamos @st.cache_resource aquí porque Streamlit ya no permite cachear widgets
+# --- GESTOR DE COOKIES ---
 def get_manager():
     return stx.CookieManager()
 
@@ -56,21 +55,19 @@ def cargar_tabla(tabla):
 def actualizar_prestamo(id_p, cant, total):
     supabase.table("prestamos").update({"cantidad_pendiente": cant, "total_pendiente": total}).eq("id", id_p).execute()
 
-# --- LOGIN CON COOKIES ---
+# --- LOGIN CON COOKIES (LÓGICA MEJORADA) ---
 def check_login():
-    # Intentamos obtener la cookie
+    # 1. PRIORIDAD: ¿Ya estamos logueados en esta sesión? (Inmediato)
+    if "usuario_logueado" in st.session_state and st.session_state["usuario_logueado"]:
+        return True
+
+    # 2. SECUNDARIO: ¿Hay cookie guardada? (Persistencia al refrescar)
     cookie_usuario = cookie_manager.get(cookie="koriel_user")
-    
-    # Pequeña pausa técnica para asegurar lectura
-    time.sleep(0.1)
-    
     if cookie_usuario:
-        if "usuario_logueado" not in st.session_state or st.session_state["usuario_logueado"] is None:
-            st.session_state["usuario_logueado"] = cookie_usuario
+        st.session_state["usuario_logueado"] = cookie_usuario
         return True
     
-    st.session_state["usuario_logueado"] = None
-    
+    # 3. SI NO HAY NADA: Mostrar Login
     st.markdown("<h1 style='text-align: center;'>🔐 GRUPO KORIEL CLOUD</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
@@ -79,9 +76,10 @@ def check_login():
         
         if st.button("Ingresar", use_container_width=True):
             if user in USUARIOS and USUARIOS[user] == password:
+                # A. Guardar en sesión (Para acceso INMEDIATO)
                 st.session_state["usuario_logueado"] = user
                 
-                # Crear Cookie que expira en 30 días
+                # B. Guardar cookie (Para acceso FUTURO)
                 exp = datetime.now() + timedelta(days=30)
                 cookie_manager.set("koriel_user", user, expires_at=exp)
                 
@@ -94,9 +92,9 @@ def check_login():
 
 # --- LOGOUT ---
 def logout():
+    # Borramos cookie y sesión al mismo tiempo
     cookie_manager.delete("koriel_user")
     st.session_state["usuario_logueado"] = None
-    time.sleep(0.5) # Dar tiempo a borrar cookie
     st.rerun()
 
 # --- APP PRINCIPAL ---
@@ -211,6 +209,5 @@ def main_app():
             tot = h[h["tipo"]=="COBRO"]["monto_operacion"].sum()
             st.metric("Total Histórico", f"${tot:,.2f}")
 
-# --- INICIO ---
 if check_login():
     main_app()
