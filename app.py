@@ -304,8 +304,8 @@ def main_app():
                             actualizar_prestamo(r["id"], new_c, float(new_c*r["precio_unitario"]))
                     if p: st.toast("Procesado"); time.sleep(1); st.rerun()
 
-    # ==========================================
-    # 🔍 CONSULTAS Y RECIBOS (CORREGIDO FINAL)
+   # ==========================================
+    # 🔍 MÓDULO 3: CONSULTAS (KARDEX ARREGLADO)
     # ==========================================
     elif menu == "🔍 Consultas y Recibos":
         st.title("🔍 Consultas")
@@ -355,7 +355,7 @@ def main_app():
                 
                 st.dataframe(df_hs.sort_values("fecha_evento", ascending=False), use_container_width=True)
 
-        # --- PESTAÑA 3: KARDEX (BUG SOLUCIONADO) ---
+        # --- PESTAÑA 3: KARDEX (BUG CORREGIDO AQUÍ) ---
         with t3:
             st.info("Historia completa del cliente.")
             cli_k = st.selectbox("Seleccionar Cliente", sorted(df_cli["nombre"].unique()) if not df_cli.empty else [])
@@ -364,24 +364,38 @@ def main_app():
                 df_hk = cargar_tabla("historial")
                 
                 kardex = []
+                # Agregamos Préstamos
                 if not df_pk.empty:
                     t = df_pk[df_pk["cliente"]==cli_k]
-                    for i,r in t.iterrows(): kardex.append({"Fecha": r["fecha_registro"], "Acción": "🔴 PRÉSTAMO", "Producto": r["producto"], "Detalle": f"Pendiente: {r['cantidad_pendiente']}"})
+                    for i,r in t.iterrows(): 
+                        # Convertimos fecha a string explícitamente
+                        kardex.append({"Fecha": str(r["fecha_registro"]), "Acción": "🔴 PRÉSTAMO", "Producto": r["producto"], "Detalle": f"Pendiente: {r['cantidad_pendiente']}"})
                 
+                # Agregamos Historial
                 if not df_hk.empty:
                     t = df_hk[df_hk["cliente"]==cli_k]
-                    for i,r in t.iterrows(): kardex.append({"Fecha": r["fecha_evento"], "Acción": "🟢 PAGO" if r["tipo"]=="COBRO" else "🟡 DEVOLUCIÓN", "Producto": r["producto"], "Detalle": f"Cant: {r['cantidad']} | ${r['monto_operacion']:,.2f}"})
+                    for i,r in t.iterrows(): 
+                        # Convertimos fecha a string explícitamente
+                        kardex.append({"Fecha": str(r["fecha_evento"]), "Acción": "🟢 PAGO" if r["tipo"]=="COBRO" else "🟡 DEVOLUCIÓN", "Producto": r["producto"], "Detalle": f"Cant: {r['cantidad']} | ${r['monto_operacion']:,.2f}"})
                 
                 if kardex:
                     df_k = pd.DataFrame(kardex)
-                    # --- ESTA LÍNEA ES LA CLAVE DEL ARREGLO ---
-                    df_k["Fecha"] = pd.to_datetime(df_k["Fecha"]) 
-                    # ------------------------------------------
+                    
+                    # --- SOLUCIÓN DEL ERROR ---
+                    # Convertimos la columna 'Fecha' (que ahora son textos) a datetime universal (UTC=True)
+                    # 'coerce' ignora errores si hay fechas raras
+                    df_k["Fecha"] = pd.to_datetime(df_k["Fecha"], utc=True, errors='coerce')
+                    
+                    # Ahora sí ordenamos
                     df_k = df_k.sort_values("Fecha", ascending=False)
+                    
+                    # Opcional: Quitar la hora fea para mostrar solo fecha limpia
+                    df_k["Fecha"] = df_k["Fecha"].dt.date
+                    
                     st.dataframe(df_k, use_container_width=True)
                 else:
                     st.warning("Sin movimientos.")
-                    
+
     # ==========================================
     # 📊 MÓDULO 4: REPORTES FINANCIEROS
     # ==========================================
