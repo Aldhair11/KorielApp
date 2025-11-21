@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import time
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -45,11 +45,14 @@ def cargar_tabla(tabla):
     try:
         response = supabase.table(tabla).select("*").execute()
         df = pd.DataFrame(response.data)
-        # Convertir fechas a datetime si existen
+        # Limpieza de fechas
         if "fecha_registro" in df.columns:
             df["fecha_registro"] = pd.to_datetime(df["fecha_registro"]).dt.date
         if "fecha_evento" in df.columns:
-            df["fecha_evento"] = pd.to_datetime(df["fecha_evento"])
+            df["fecha_evento"] = pd.to_datetime(df["fecha_evento"]) # Mantenemos hora para orden, quitamos al mostrar
+        # Eliminar created_at si existe (para limpieza visual)
+        if "created_at" in df.columns:
+            df = df.drop(columns=["created_at"])
         return df
     except:
         return pd.DataFrame()
@@ -116,7 +119,7 @@ def main_app():
     df_prod = cargar_tabla("productos")
 
     # ==========================================
-    # 1. NUEVO PRÉSTAMO (AGILE)
+    # 1. NUEVO PRÉSTAMO (SIN CAMBIOS, FUNCIONA BIEN)
     # ==========================================
     if menu == "📦 Nuevo Préstamo":
         st.title("📦 Registrar Salida")
@@ -169,7 +172,7 @@ def main_app():
                 else: st.error("Faltan datos")
 
     # ==========================================
-    # 2. RUTAS Y COBRO (CON COBRO FLASH)
+    # 2. RUTAS Y COBRO (CORREGIDO MODULO 1)
     # ==========================================
     elif menu == "📍 Rutas y Cobro":
         st.title("📍 Cobranza")
@@ -181,42 +184,71 @@ def main_app():
         else:
             cli_visita = st.selectbox("Cliente a Visitar:", sorted(df_pend["cliente"].unique()))
             
-            # Info Cliente
-            if not df_cli.empty:
-                info = df_cli[df_cli["nombre"] == cli_visita]
-                if not info.empty:
-                    st.info(f"🏠 {info.iloc[0].get('tienda','-')} | 📍 {info.iloc[0].get('direccion','-')}")
-
+            # 1. Info Cliente y DEUDA TOTAL
             datos = df_pend[df_pend["cliente"] == cli_visita].copy()
-            datos["Cobrar"], datos["Devolver"] = 0, 0
+            deuda_total_cliente = datos["total_pendiente"].sum()
             
-            # --- SECCIÓN COBRO FLASH ---
-            col_flash, col_manual = st.columns([1, 2])
-            with col_flash:
-                st.markdown("#### ⚡ Opción Rápida")
-                if st.button("💰 COBRAR TODO EL STOCK", type="primary", help="Marca TODO lo que tiene el cliente como Vendido y Cobrado"):
+            col_info, col_deuda = st.columns([3, 1])
+            with col_info:
+                if not df_cli.empty:
+                    info = df_cli[df_cli["nombre"] == cli_visita]
+                    if not info.empty:
+                        r = info.iloc[0]
+                        st.info(f"🏠 {r.get('tienda','-')} | 📍 {r.get('direccion','-')} | 📞 {r.get('telefono','-')}")
+            with col_deuda:
+                st.metric("DEUDA TOTAL", f"${deuda_total_cliente:,.2f}")
+
+            # Preparamos la tabla
+            datos["Cobrar"] = 0
+            datos["Devolver"] = 0
+            
+            # 2. Botones de Acción Rápida (Cobrar Todo / Devolver Todo)
+            col_flash1, col_flash2 = st.columns(2)
+            with col_flash1:
+                if st.button("💰 COBRAR TODO (Pagó 100%)", type="primary", use_container_width=True):
                     hoy = datetime.now().isoformat()
                     for i, r in datos.iterrows():
                         cant = int(r["cantidad_pendiente"])
                         monto = float(cant * r["precio_unitario"])
                         insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "COBRO", "cliente": cli_visita, "producto": r["producto"], "cantidad": cant, "monto_operacion": monto})
                         actualizar_prestamo(r["id"], 0, 0)
-                    st.toast("✅ ¡Cobro Total Realizado!"); time.sleep(1); st.rerun()
+                    st.toast("✅ ¡Cobro Total!"); time.sleep(1); st.rerun()
+            
+            with col_flash2:
+                # NUEVO BOTON PEDIDO: DEVOLVER TODO
+                if st.button("🔙 DEVOLVER TODO (No vendió nada)", type="secondary", use_container_width=True):
+                    hoy = datetime.now().isoformat()
+                    for i, r in datos.iterrows():
+                        cant = int(r["cantidad_pendiente"])
+                        insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "DEVOLUCION", "cliente": cli_visita, "producto": r["producto"], "cantidad": cant, "monto_operacion": 0})
+                        actualizar_prestamo(r["id"], 0, 0)
+                    st.toast("✅ ¡Todo Devuelto!"); time.sleep(1); st.rerun()
 
-            with col_manual:
-                st.markdown("#### 📝 Cobro Parcial / Devolución")
-                edited = st.data_editor(
-                    datos[["id", "producto", "cantidad_pendiente", "precio_unitario", "Cobrar", "Devolver"]],
-                    column_config={
-                        "id": st.column_config.NumberColumn(disabled=True),
-                        "cantidad_pendiente": st.column_config.NumberColumn("En Tienda", disabled=True),
-                        "precio_unitario": st.column_config.NumberColumn("Precio", format="$%.2f", disabled=True),
-                        "Cobrar": st.column_config.NumberColumn("Vendido", min_value=0),
-                        "Devolver": st.column_config.NumberColumn("Regresa", min_value=0)
-                    },
-                    hide_index=True, key="edit_cob"
-                )
-                if st.button("✅ Procesar Manual"):
+            st.markdown("---")
+            st.write("##### 📝 Gestión Manual (Parciales)")
+            
+            # 3. Tabla Editable Manual
+            edited = st.data_editor(
+                datos[["id", "producto", "cantidad_pendiente", "precio_unitario", "Cobrar", "Devolver"]],
+                column_config={
+                    "id": st.column_config.NumberColumn(disabled=True),
+                    "cantidad_pendiente": st.column_config.NumberColumn("En Tienda", disabled=True),
+                    "precio_unitario": st.column_config.NumberColumn("Precio", format="$%.2f", disabled=True),
+                    "Cobrar": st.column_config.NumberColumn("Pagó (Und)", min_value=0),
+                    "Devolver": st.column_config.NumberColumn("Devuelve (Und)", min_value=0)
+                },
+                hide_index=True, key="edit_cob"
+            )
+            
+            # Cálculo Dinámico del Total a Pagar en ese momento
+            total_a_pagar_ahora = (edited["Cobrar"] * edited["precio_unitario"]).sum()
+            
+            c_conf1, c_conf2 = st.columns([2, 1])
+            with c_conf1:
+                 if total_a_pagar_ahora > 0:
+                    st.success(f"💵 CLIENTE ESTÁ PAGANDO AHORA: **${total_a_pagar_ahora:,.2f}**")
+            with c_conf2:
+                if st.button("✅ Procesar Manual", use_container_width=True):
                     hoy = datetime.now().isoformat()
                     proc = False
                     for i, r in edited.iterrows():
@@ -229,154 +261,216 @@ def main_app():
                     if proc: st.toast("Procesado"); time.sleep(1); st.rerun()
 
     # ==========================================
-    # 3. CONSULTAS Y RECIBOS (NUEVO MODULO)
+    # 3. CONSULTAS Y RECIBOS (CORREGIDO MODULO 2)
     # ==========================================
     elif menu == "🔍 Consultas y Recibos":
         st.title("🔍 Consultas y Recibos")
         
-        tab_pend, tab_hist = st.tabs(["📂 Pendientes de Cobro", "📜 Historial (Pagado/Devuelto)"])
+        tab_pend, tab_hist = st.tabs(["📂 Pendientes de Cobro", "📜 Historial"])
         
-        # --- PENDIENTES ---
+        # --- PENDIENTES (FILTROS MEJORADOS) ---
         with tab_pend:
-            st.subheader("Filtro de Deudas")
+            st.subheader("Pendientes de Cobro")
             df_p = cargar_tabla("prestamos")
             if not df_p.empty:
-                df_p = df_p[df_p["cantidad_pendiente"] > 0] # Solo lo activo
+                df_p = df_p[df_p["cantidad_pendiente"] > 0]
                 
-                # Filtros
-                c1, c2 = st.columns(2)
-                filtro_cli = c1.multiselect("Filtrar por Cliente", df_p["cliente"].unique())
-                
-                df_show = df_p if not filtro_cli else df_p[df_p["cliente"].isin(filtro_cli)]
-                
-                st.dataframe(df_show, use_container_width=True)
-                st.metric("Total Deuda en Pantalla", f"${df_show['total_pendiente'].sum():,.2f}")
-                
-                st.divider()
-                st.subheader("🖨️ Generador de Recibos")
-                if len(filtro_cli) == 1:
-                    cliente_recibo = filtro_cli[0]
-                    datos_recibo = df_show[df_show["cliente"] == cliente_recibo]
-                    
-                    st.caption("Copia y pega esto en WhatsApp:")
-                    fecha_hoy = datetime.now().strftime("%d/%m/%Y")
-                    texto_recibo = f"*ESTADO DE CUENTA - GRUPO KORIEL*\n"
-                    texto_recibo += f"📅 Fecha: {fecha_hoy}\n"
-                    texto_recibo += f"👤 Cliente: {cliente_recibo}\n"
-                    texto_recibo += "--------------------------------\n"
-                    total = 0
-                    for i, r in datos_recibo.iterrows():
-                        sub = r['cantidad_pendiente'] * r['precio_unitario']
-                        total += sub
-                        texto_recibo += f"▫️ {r['producto']} (x{r['cantidad_pendiente']}) - ${sub:,.2f}\n"
-                    texto_recibo += "--------------------------------\n"
-                    texto_recibo += f"*💰 TOTAL A PAGAR: ${total:,.2f}*"
-                    
-                    st.code(texto_recibo, language="text")
-                else:
-                    st.info("Selecciona UN solo cliente arriba para generar su recibo detallado.")
+                # FILTROS: TIEMPO Y CLIENTE
+                col_f1, col_f2 = st.columns(2)
+                with col_f1:
+                    filtro_tiempo = st.selectbox("Filtrar por Fecha de Préstamo", ["Todos", "Hoy", "Esta Semana", "Este Mes"])
+                with col_f2:
+                    filtro_cli = st.multiselect("Filtrar por Cliente", sorted(df_p["cliente"].unique()))
 
-        # --- HISTORIAL ---
+                # Lógica de filtrado
+                df_show = df_p.copy()
+                
+                # Filtro Tiempo
+                hoy = date.today()
+                if filtro_tiempo == "Hoy":
+                    df_show = df_show[df_show["fecha_registro"] == hoy]
+                elif filtro_tiempo == "Esta Semana":
+                    inicio_semana = hoy - timedelta(days=hoy.weekday())
+                    df_show = df_show[df_show["fecha_registro"] >= inicio_semana]
+                elif filtro_tiempo == "Este Mes":
+                    inicio_mes = hoy.replace(day=1)
+                    df_show = df_show[df_show["fecha_registro"] >= inicio_mes]
+
+                # Filtro Cliente
+                if filtro_cli:
+                    df_show = df_show[df_show["cliente"].isin(filtro_cli)]
+                
+                # Mostrar Tabla Limpia (Sin created_at)
+                st.dataframe(df_show, use_container_width=True)
+                st.metric("Total Deuda Filtrada", f"${df_show['total_pendiente'].sum():,.2f}")
+                
+                # Generador de Recibo
+                st.divider()
+                if not df_show.empty:
+                    if st.button("🖨️ Generar Recibo de lo Filtrado"):
+                        fecha_str = datetime.now().strftime("%d/%m/%Y")
+                        texto = f"*REPORTE DE PENDIENTES - GRUPO KORIEL*\n📅 Fecha: {fecha_str}\n"
+                        if filtro_tiempo != "Todos": texto += f"⏳ Periodo: {filtro_tiempo}\n"
+                        texto += "--------------------------------\n"
+                        
+                        # Agrupar por cliente para el recibo
+                        for cli in df_show["cliente"].unique():
+                            texto += f"👤 *{cli}*:\n"
+                            sub_df = df_show[df_show["cliente"] == cli]
+                            for idx, row in sub_df.iterrows():
+                                texto += f"   - {row['producto']} (x{row['cantidad_pendiente']}): ${row['total_pendiente']:,.2f}\n"
+                        
+                        texto += "--------------------------------\n"
+                        texto += f"*💰 DEUDA TOTAL FILTRADA: ${df_show['total_pendiente'].sum():,.2f}*"
+                        st.code(texto, language="text")
+
+        # --- HISTORIAL (FILTROS MEJORADOS) ---
         with tab_hist:
             st.subheader("Historial de Movimientos")
             df_h = cargar_tabla("historial")
             if not df_h.empty:
-                # Filtro de Fechas
-                c1, c2 = st.columns(2)
-                fecha_inicio = c1.date_input("Desde", datetime.now() - timedelta(days=7))
-                fecha_fin = c2.date_input("Hasta", datetime.now())
+                # Filtros Combinados
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    f_cli_h = st.multiselect("Cliente", sorted(df_h["cliente"].unique()))
+                with c2:
+                    f_tipo_h = st.multiselect("Tipo", ["COBRO", "DEVOLUCION"])
+                with c3:
+                    f_fecha_h = st.date_input("Fecha (Desde - Hasta)", [date.today() - timedelta(days=30), date.today()])
+
+                # Aplicar Filtros
+                df_h_show = df_h.copy()
+                if f_cli_h: df_h_show = df_h_show[df_h_show["cliente"].isin(f_cli_h)]
+                if f_tipo_h: df_h_show = df_h_show[df_h_show["tipo"].isin(f_tipo_h)]
                 
-                # Convertir a datetime para filtrar
-                mask = (df_h['fecha_evento'].dt.date >= fecha_inicio) & (df_h['fecha_evento'].dt.date <= fecha_fin)
-                df_h_filtrado = df_h.loc[mask]
+                # Filtro Fecha (Rango)
+                if len(f_fecha_h) == 2:
+                    df_h_show = df_h_show[(df_h_show["fecha_evento"].dt.date >= f_fecha_h[0]) & (df_h_show["fecha_evento"].dt.date <= f_fecha_h[1])]
+
+                # Tabla (Sin created_at, solo fecha evento)
+                cols_ver = ["fecha_evento", "tipo", "cliente", "producto", "cantidad", "monto_operacion", "usuario_responsable"]
+                # Solo mostramos columnas que existan
+                cols_final = [c for c in cols_ver if c in df_h_show.columns]
                 
-                st.dataframe(df_h_filtrado.sort_values("fecha_evento", ascending=False), use_container_width=True)
-                
-                st.metric("Dinero Recaudado en este periodo", f"${df_h_filtrado[df_h_filtrado['tipo']=='COBRO']['monto_operacion'].sum():,.2f}")
+                st.dataframe(df_h_show[cols_final].sort_values("fecha_evento", ascending=False), use_container_width=True)
 
     # ==========================================
-    # 4. REPORTES FINANCIEROS (MEJORADO)
+    # 4. REPORTES FINANCIEROS (CORREGIDO MODULO 3)
     # ==========================================
     elif menu == "📊 Reportes Financieros":
         st.title("📊 Balance General")
         
+        # Filtros Globales para el Reporte
+        st.markdown("### 🔍 Filtros de Reporte")
+        c_rep1, c_rep2 = st.columns(2)
+        f_rep_cli = c_rep1.multiselect("Filtrar Clientes Específicos", sorted(df_cli["nombre"].unique()) if not df_cli.empty else [])
+        f_rep_fecha = c_rep2.date_input("Rango de Fechas (Para Ingresos)", [date.today() - timedelta(days=30), date.today()])
+
         df_p = cargar_tabla("prestamos")
         df_h = cargar_tabla("historial")
         
-        c1, c2 = st.columns(2)
+        # Aplicar filtros
+        if f_rep_cli:
+            if not df_p.empty: df_p = df_p[df_p["cliente"].isin(f_rep_cli)]
+            if not df_h.empty: df_h = df_h[df_h["cliente"].isin(f_rep_cli)]
         
-        with c1:
-            st.subheader("🔴 Por Cobrar (En Calle)")
+        if not df_h.empty and len(f_rep_fecha) == 2:
+             df_h = df_h[(df_h["fecha_evento"].dt.date >= f_rep_fecha[0]) & (df_h["fecha_evento"].dt.date <= f_rep_fecha[1])]
+
+        st.divider()
+
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("🔴 Deuda Pendiente (Actual)")
             if not df_p.empty:
                 deuda_total = df_p["total_pendiente"].sum()
-                st.metric("Capital Pendiente", f"${deuda_total:,.2f}")
-                
-                # Top Deudores
-                deuda_por_cli = df_p.groupby("cliente")["total_pendiente"].sum().sort_values(ascending=False).head(5)
-                st.write("**Top 5 Clientes que más deben:**")
-                st.dataframe(deuda_por_cli)
+                st.metric("Total por Cobrar", f"${deuda_total:,.2f}")
+                st.dataframe(df_p.groupby("cliente")["total_pendiente"].sum().sort_values(ascending=False))
         
-        with c2:
-            st.subheader("🟢 Ingresos Reales (Cobrado)")
+        with col2:
+            st.subheader("🟢 Ingresos (En el periodo)")
             if not df_h.empty:
                 cobros = df_h[df_h["tipo"]=="COBRO"]
-                ganancia_total = cobros["monto_operacion"].sum()
-                st.metric("Total Cobrado (Histórico)", f"${ganancia_total:,.2f}")
-                
-                # Top Productos
-                prod_top = cobros.groupby("producto")["cantidad"].sum().sort_values(ascending=False).head(5)
-                st.write("**Top 5 Productos más vendidos:**")
-                st.dataframe(prod_top)
+                ganancia = cobros["monto_operacion"].sum()
+                st.metric("Total Recaudado", f"${ganancia:,.2f}")
+                st.dataframe(cobros.groupby("cliente")["monto_operacion"].sum().sort_values(ascending=False))
 
     # ==========================================
-    # 5. ADMINISTRACIÓN Y CORRECCIÓN
+    # 5. ADMINISTRACIÓN (CORREGIDO MODULO 4)
     # ==========================================
     elif menu == "🛠️ Administración":
         st.title("🛠️ Administración")
         
-        tab1, tab2 = st.tabs(["📝 Editar Datos Maestros", "➕ Crear Nuevos"])
+        # CAMBIO ORDEN TABS: Crear primero, Editar después
+        tab_crear, tab_edit = st.tabs(["➕ Crear Nuevos (Maestros)", "✏️ Editar Existentes"])
         
-        with tab1:
-            st.info("Aquí puedes corregir nombres o precios si te equivocaste.")
-            tipo_edit = st.radio("¿Qué quieres editar?", ["Clientes", "Productos"], horizontal=True)
+        with tab_crear:
+            c1, c2 = st.columns(2)
             
-            if tipo_edit == "Clientes":
-                if not df_cli.empty:
-                    cli_a_editar = st.selectbox("Buscar Cliente a Corregir", df_cli["nombre"].unique())
-                    datos_c = df_cli[df_cli["nombre"]==cli_a_editar].iloc[0]
+            # CREAR CLIENTE COMPLETO
+            with c1:
+                st.subheader("Nuevo Cliente")
+                with st.form("new_cli_full"):
+                    nc = st.text_input("Nombre Completo *")
+                    nt = st.text_input("Nombre Tienda")
+                    ntel = st.text_input("Teléfono / Celular")
+                    ndir = st.text_input("Dirección")
+                    nruc1 = st.text_input("RUC Principal") # NUEVO
+                    nruc2 = st.text_input("RUC Secundario (Opcional)") # NUEVO
                     
-                    with st.expander("✏️ Editar Datos del Cliente", expanded=True):
-                        new_n = st.text_input("Nombre", value=datos_c["nombre"])
-                        new_t = st.text_input("Tienda", value=datos_c["tienda"])
-                        new_tel = st.text_input("Teléfono", value=datos_c["telefono"])
-                        new_d = st.text_input("Dirección", value=datos_c["direccion"])
-                        
-                        if st.button("Actualizar Cliente"):
-                            editar_maestro("clientes", int(datos_c["id"]), {"nombre": new_n, "tienda": new_t, "telefono": new_tel, "direccion": new_d})
-                            st.success("Actualizado!"); time.sleep(1); st.rerun()
-            
-            elif tipo_edit == "Productos":
-                if not df_prod.empty:
-                    prod_a_editar = st.selectbox("Buscar Producto a Corregir", df_prod["nombre"].unique())
-                    datos_p = df_prod[df_prod["nombre"]==prod_a_editar].iloc[0]
-                    
-                    with st.expander("✏️ Editar Datos del Producto", expanded=True):
-                        new_np = st.text_input("Nombre", value=datos_p["nombre"])
-                        new_pp = st.number_input("Precio Base", value=float(datos_p["precio_base"]))
-                        new_cat = st.text_input("Categoría", value=datos_p["categoria"])
-                        
-                        if st.button("Actualizar Producto"):
-                            editar_maestro("productos", int(datos_p["id"]), {"nombre": new_np, "precio_base": new_pp, "categoria": new_cat})
-                            st.success("Actualizado!"); time.sleep(1); st.rerun()
+                    if st.form_submit_button("Guardar Cliente"):
+                        if nc:
+                            insertar_registro("clientes", {
+                                "nombre": nc, "tienda": nt, "telefono": ntel, "direccion": ndir, 
+                                "ruc1": nruc1, "ruc2": nruc2
+                            })
+                            st.success("Cliente Guardado"); time.sleep(1); st.rerun()
+                        else: st.error("Nombre obligatorio")
 
-        with tab2:
-            st.write("Usa el alta rápida en 'Nuevo Préstamo' o crea aquí:")
-            with st.form("new_m"):
-                st.write("Crear Cliente Manual")
-                n=st.text_input("Nombre"); t=st.text_input("Tienda")
-                if st.form_submit_button("Crear"):
-                    insertar_registro("clientes", {"nombre":n, "tienda":t})
-                    st.rerun()
+            # CREAR PRODUCTO (AÑADIDO DE NUEVO)
+            with c2:
+                st.subheader("Nuevo Producto")
+                with st.form("new_prod_full"):
+                    np = st.text_input("Nombre Producto *")
+                    ncat = st.selectbox("Categoría", ["Iluminación", "Cables", "Herramientas", "Interruptores", "Otros"])
+                    npre = st.number_input("Precio Base ($)", min_value=0.0)
+                    
+                    if st.form_submit_button("Guardar Producto"):
+                        if np:
+                            insertar_registro("productos", {"nombre": np, "categoria": ncat, "precio_base": npre})
+                            st.success("Producto Guardado"); time.sleep(1); st.rerun()
+                        else: st.error("Nombre obligatorio")
+
+        with tab_edit:
+            st.info("Busca y corrige datos erróneos.")
+            tipo = st.radio("Editar:", ["Clientes", "Productos"], horizontal=True)
+            
+            if tipo == "Clientes" and not df_cli.empty:
+                edit_c = st.selectbox("Buscar Cliente", df_cli["nombre"].unique())
+                dat = df_cli[df_cli["nombre"]==edit_c].iloc[0]
+                with st.form("edit_c_f"):
+                    en = st.text_input("Nombre", value=dat["nombre"])
+                    et = st.text_input("Tienda", value=dat.get("tienda",""))
+                    etel = st.text_input("Tel", value=dat.get("telefono",""))
+                    edir = st.text_input("Dir", value=dat.get("direccion",""))
+                    eruc1 = st.text_input("RUC 1", value=dat.get("ruc1",""))
+                    eruc2 = st.text_input("RUC 2", value=dat.get("ruc2",""))
+                    
+                    if st.form_submit_button("Actualizar"):
+                        editar_maestro("clientes", int(dat["id"]), {"nombre":en, "tienda":et, "telefono":etel, "direccion":edir, "ruc1":eruc1, "ruc2":eruc2})
+                        st.success("Actualizado"); time.sleep(1); st.rerun()
+            
+            elif tipo == "Productos" and not df_prod.empty:
+                edit_p = st.selectbox("Buscar Producto", df_prod["nombre"].unique())
+                datp = df_prod[df_prod["nombre"]==edit_p].iloc[0]
+                with st.form("edit_p_f"):
+                    epn = st.text_input("Nombre", value=datp["nombre"])
+                    epp = st.number_input("Precio", value=float(datp["precio_base"]))
+                    epc = st.text_input("Cat", value=datp["categoria"])
+                    if st.form_submit_button("Actualizar"):
+                        editar_maestro("productos", int(datp["id"]), {"nombre":epn, "precio_base":epp, "categoria":epc})
+                        st.success("Actualizado"); time.sleep(1); st.rerun()
 
 # --- INICIO ---
 if check_login():
