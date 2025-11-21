@@ -114,7 +114,7 @@ def main_app():
     usuario_actual = st.session_state["usuario_logueado"]
     
     with st.sidebar:
-        st.title("🏢 KORIEL CLOUD")
+        st.title("🏢 GRUPO KORIEL")
         st.write(f"👤 **{usuario_actual.upper()}**")
         st.divider()
         menu = st.radio("Navegación", [
@@ -305,22 +305,20 @@ def main_app():
                     if p: st.toast("Procesado"); time.sleep(1); st.rerun()
 
     # ==========================================
-    # 🔍 MÓDULO 3: CONSULTAS (KARDEX + RECIBOS)
+    # 🔍 CONSULTAS Y RECIBOS (CORREGIDO FINAL)
     # ==========================================
     elif menu == "🔍 Consultas y Recibos":
         st.title("🔍 Consultas")
         t1, t2, t3 = st.tabs(["📂 Deudas", "📜 Historial", "📇 Kardex Cliente"])
         
-        # --- PESTAÑA 1: DEUDAS (RECIBO WHATSAPP) ---
+        # --- PESTAÑA 1: DEUDAS ---
         with t1:
             df_p = cargar_tabla("prestamos")
             if not df_p.empty:
                 df_p = df_p[df_p["cantidad_pendiente"] > 0]
-                
-                # Filtros
                 c1, c2 = st.columns(2)
-                ft = c1.selectbox("Filtrar por Fecha", ["Todos", "Hoy", "Esta Semana", "Este Mes"])
-                fc = c2.multiselect("Filtrar por Cliente", sorted(df_p["cliente"].unique()))
+                ft = c1.selectbox("Filtro Fecha", ["Todos", "Hoy", "Esta Semana", "Este Mes"])
+                fc = c2.multiselect("Filtro Cliente", sorted(df_p["cliente"].unique()))
                 
                 df_s = df_p.copy()
                 hoy = date.today()
@@ -332,17 +330,13 @@ def main_app():
                 st.dataframe(df_s, use_container_width=True)
                 st.metric("Total Mostrado", f"${df_s['total_pendiente'].sum():,.2f}")
                 
-                st.divider()
-                if st.button("🖨️ Generar Texto Recibo (WhatsApp)"):
-                    txt = f"*ESTADO DE CUENTA - GRUPO KORIEL*\n📅 Fecha: {datetime.now().strftime('%d/%m/%Y')}\n"
-                    if ft != "Todos": txt += f"⏳ Filtro: {ft}\n"
-                    txt += "--------------------------------\n"
+                if st.button("🖨️ Generar Recibo WhatsApp"):
+                    txt = f"*ESTADO DE CUENTA*\n📅 {datetime.now().strftime('%d/%m/%Y')}\n----------------\n"
                     for c in df_s["cliente"].unique():
-                        txt += f"👤 *{c}*:\n"
+                        txt += f"👤 {c}:\n"
                         for i, r in df_s[df_s["cliente"]==c].iterrows():
-                            txt += f"   - {r['producto']} (x{r['cantidad_pendiente']}): ${r['total_pendiente']:,.2f}\n"
-                    txt += "--------------------------------\n"
-                    txt += f"*💰 TOTAL PENDIENTE: ${df_s['total_pendiente'].sum():,.2f}*"
+                            txt += f" - {r['producto']} (x{r['cantidad_pendiente']}): ${r['total_pendiente']:,.2f}\n"
+                    txt += f"----------------\n*TOTAL: ${df_s['total_pendiente'].sum():,.2f}*"
                     st.code(txt, language="text")
 
         # --- PESTAÑA 2: HISTORIAL ---
@@ -360,12 +354,11 @@ def main_app():
                 if len(fd)==2: df_hs = df_hs[(df_hs["fecha_evento"].dt.date >= fd[0]) & (df_hs["fecha_evento"].dt.date <= fd[1])]
                 
                 st.dataframe(df_hs.sort_values("fecha_evento", ascending=False), use_container_width=True)
-                st.metric("Recaudado en Selección", f"${df_hs[df_hs['tipo']=='COBRO']['monto_operacion'].sum():,.2f}")
 
-        # --- PESTAÑA 3: KARDEX ---
+        # --- PESTAÑA 3: KARDEX (BUG SOLUCIONADO) ---
         with t3:
-            st.info("Historia clínica completa de un cliente.")
-            cli_k = st.selectbox("Ver Movimientos de:", sorted(df_cli["nombre"].unique()) if not df_cli.empty else [])
+            st.info("Historia completa del cliente.")
+            cli_k = st.selectbox("Seleccionar Cliente", sorted(df_cli["nombre"].unique()) if not df_cli.empty else [])
             if cli_k:
                 df_pk = cargar_tabla("prestamos")
                 df_hk = cargar_tabla("historial")
@@ -380,11 +373,15 @@ def main_app():
                     for i,r in t.iterrows(): kardex.append({"Fecha": r["fecha_evento"], "Acción": "🟢 PAGO" if r["tipo"]=="COBRO" else "🟡 DEVOLUCIÓN", "Producto": r["producto"], "Detalle": f"Cant: {r['cantidad']} | ${r['monto_operacion']:,.2f}"})
                 
                 if kardex:
-                    df_k = pd.DataFrame(kardex).sort_values("Fecha", ascending=False)
+                    df_k = pd.DataFrame(kardex)
+                    # --- ESTA LÍNEA ES LA CLAVE DEL ARREGLO ---
+                    df_k["Fecha"] = pd.to_datetime(df_k["Fecha"]) 
+                    # ------------------------------------------
+                    df_k = df_k.sort_values("Fecha", ascending=False)
                     st.dataframe(df_k, use_container_width=True)
                 else:
-                    st.warning("Sin movimientos registrados.")
-
+                    st.warning("Sin movimientos.")
+                    
     # ==========================================
     # 📊 MÓDULO 4: REPORTES FINANCIEROS
     # ==========================================
@@ -450,7 +447,7 @@ def main_app():
             with c1:
                 st.markdown("#### Nuevo Cliente")
                 with st.form("fc"):
-                    n=st.text_input("Nombre *"); t=st.text_input("Tienda"); tel=st.text_input("Tel"); d=st.text_input("Dir"); r1=st.text_input("RUC1"); r2=st.text_input("RUC2")
+                    n=st.text_input("Nombre *"); t=st.text_input("Tienda"); tel=st.text_input("Telefono"); d=st.text_input("Direccion"); r1=st.text_input("RUC1"); r2=st.text_input("RUC2")
                     if st.form_submit_button("Crear Cliente"):
                         if n: 
                             insertar_registro("clientes", {"nombre":n, "tienda":t, "telefono":tel, "direccion":d, "ruc1":r1, "ruc2":r2})
@@ -458,7 +455,7 @@ def main_app():
             with c2:
                 st.markdown("#### Nuevo Producto")
                 with st.form("fp"):
-                    n=st.text_input("Producto *"); c=st.selectbox("Cat", ["Varios", "Focos", "Cables"]); p=st.number_input("Precio Base")
+                    n=st.text_input("Producto *"); c=st.selectbox("Categoria", ["Interruptores","Contactores","Tableros", "Cables","Varios"]); p=st.number_input("Precio Base")
                     if st.form_submit_button("Crear Producto"):
                         if n:
                             insertar_registro("productos", {"nombre":n, "categoria":c, "precio_base":p})
