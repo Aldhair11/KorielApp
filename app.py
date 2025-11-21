@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -12,6 +12,7 @@ st.markdown("""
 <style>
     [data-testid="stSidebarNav"] {display: none;}
     .stRadio > label {display: none;}
+    div[data-testid="stMetricValue"] {font-size: 24px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -31,7 +32,7 @@ USUARIOS = {
     "maria": "0000"
 }
 
-# --- FUNCIONES DE DATOS ---
+# --- FUNCIONES CRUD ---
 def insertar_registro(tabla, datos):
     try:
         supabase.table(tabla).insert(datos).execute()
@@ -43,7 +44,13 @@ def insertar_registro(tabla, datos):
 def cargar_tabla(tabla):
     try:
         response = supabase.table(tabla).select("*").execute()
-        return pd.DataFrame(response.data)
+        df = pd.DataFrame(response.data)
+        # Convertir fechas a datetime si existen
+        if "fecha_registro" in df.columns:
+            df["fecha_registro"] = pd.to_datetime(df["fecha_registro"]).dt.date
+        if "fecha_evento" in df.columns:
+            df["fecha_evento"] = pd.to_datetime(df["fecha_evento"])
+        return df
     except:
         return pd.DataFrame()
 
@@ -56,25 +63,30 @@ def actualizar_prestamo(id_p, cant, total):
     except Exception as e:
         st.error(f"Error actualizando: {e}")
 
+def editar_maestro(tabla, id_row, datos_nuevos):
+    try:
+        supabase.table(tabla).update(datos_nuevos).eq("id", id_row).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error editando: {e}")
+        return False
+
 # --- LOGIN ---
 def check_login():
     if "usuario_logueado" in st.session_state and st.session_state["usuario_logueado"]:
         return True
-    
     st.session_state["usuario_logueado"] = None
     st.markdown("<h1 style='text-align: center;'>🔐 GRUPO KORIEL CLOUD</h1>", unsafe_allow_html=True)
-    
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         user = st.text_input("Usuario")
         password = st.text_input("Contraseña", type="password")
-        
-        if st.button("Iniciar Sesión", use_container_width=True, type="primary"):
+        if st.button("Entrar", use_container_width=True, type="primary"):
             if user in USUARIOS and USUARIOS[user] == password:
                 st.session_state["usuario_logueado"] = user
                 st.rerun()
             else:
-                st.error("Credenciales incorrectas")
+                st.error("Datos incorrectos")
     return False
 
 def logout():
@@ -89,222 +101,282 @@ def main_app():
         st.title("🏢 KORIEL CLOUD")
         st.write(f"👤 **{usuario_actual.upper()}**")
         st.divider()
-        # CAMBIO 1: Reordenamos el menú para que "Nuevo Préstamo" sea el primero (index 0)
-        menu = st.radio("Menú Principal", ["📦 Nuevo Préstamo", "📍 Rutas y Cobro", "🛠️ Administración", "📊 Reportes"])
+        menu = st.radio("Menú", [
+            "📦 Nuevo Préstamo", 
+            "📍 Rutas y Cobro", 
+            "🔍 Consultas y Recibos", 
+            "📊 Reportes Financieros", 
+            "🛠️ Administración"
+        ])
         st.divider()
         if st.button("Cerrar Sesión"):
             logout()
 
-    # Carga de datos
     df_cli = cargar_tabla("clientes")
     df_prod = cargar_tabla("productos")
 
-    # ==================================================
-    # 📦 SECCIÓN: NUEVO PRÉSTAMO (PANTALLA PRINCIPAL)
-    # ==================================================
+    # ==========================================
+    # 1. NUEVO PRÉSTAMO (AGILE)
+    # ==========================================
     if menu == "📦 Nuevo Préstamo":
-        st.title("📦 Registrar Salida (Rápida)")
-        
-        # Preparamos listas con opción de CREAR NUEVO al principio
-        lista_clientes = ["➕ CREAR NUEVO CLIENTE..."] + sorted(df_cli["nombre"].unique().tolist()) if not df_cli.empty else ["➕ CREAR NUEVO CLIENTE..."]
-        lista_productos = ["➕ CREAR NUEVO PRODUCTO..."] + sorted(df_prod["nombre"].unique().tolist()) if not df_prod.empty else ["➕ CREAR NUEVO PRODUCTO..."]
+        st.title("📦 Registrar Salida")
+        lista_c = ["➕ CREAR NUEVO..."] + sorted(df_cli["nombre"].unique().tolist()) if not df_cli.empty else ["➕ CREAR NUEVO..."]
+        lista_p = ["➕ CREAR NUEVO..."] + sorted(df_prod["nombre"].unique().tolist()) if not df_prod.empty else ["➕ CREAR NUEVO..."]
 
-        with st.container(): # Contenedor para agrupar visualmente
+        with st.container():
             c1, c2 = st.columns(2)
-            
-            # --- COLUMNA 1: CLIENTE ---
             with c1:
-                st.subheader("1. ¿A quién?")
-                # El selectbox permite escribir para buscar
-                cliente_seleccion = st.selectbox("Buscar Cliente", lista_clientes, help="Escribe para buscar")
-                
-                cliente_final = None
-                nuevo_cliente_nombre = None
-                nuevo_cliente_tienda = None
-                
-                # Lógica de Alta Rápida Cliente
-                if cliente_seleccion == "➕ CREAR NUEVO CLIENTE...":
-                    st.info("⚡ Alta Rápida de Cliente")
-                    nuevo_cliente_nombre = st.text_input("Nombre del Cliente Nuevo")
-                    nuevo_cliente_tienda = st.text_input("Nombre de su Tienda (Opcional)")
-                    cliente_final = nuevo_cliente_nombre # Se usará este nombre
-                else:
-                    cliente_final = cliente_seleccion
+                cli_sel = st.selectbox("Cliente", lista_c)
+                cli_final = None; new_cli_n = None; new_cli_t = None
+                if cli_sel == "➕ CREAR NUEVO...":
+                    st.info("Alta Rápida Cliente")
+                    new_cli_n = st.text_input("Nombre")
+                    new_cli_t = st.text_input("Tienda")
+                    cli_final = new_cli_n
+                else: cli_final = cli_sel
             
-            # --- COLUMNA 2: PRODUCTO Y PRECIO ---
             with c2:
-                st.subheader("2. ¿Qué lleva?")
-                producto_seleccion = st.selectbox("Buscar Producto", lista_productos, help="Escribe para buscar")
-                
-                producto_final = None
-                precio_final = 0.0
-                es_producto_nuevo = False
-                
-                # Lógica de Alta Rápida Producto
-                if producto_seleccion == "➕ CREAR NUEVO PRODUCTO...":
-                    st.info("⚡ Alta Rápida de Producto")
-                    producto_final = st.text_input("Nombre del Producto Nuevo")
-                    es_producto_nuevo = True
-                    # Si es nuevo, el precio empieza en 0 para que tú lo pongas
-                    precio_sugerido = 0.0
+                prod_sel = st.selectbox("Producto", lista_p)
+                prod_final = None; pre_sug = 0.0
+                if prod_sel == "➕ CREAR NUEVO...":
+                    st.info("Alta Rápida Producto")
+                    prod_final = st.text_input("Nombre Producto")
                 else:
-                    producto_final = producto_seleccion
-                    # Si existe, buscamos su precio base
-                    precio_sugerido = 0.0
+                    prod_final = prod_sel
                     if not df_prod.empty:
-                        fila = df_prod[df_prod["nombre"] == producto_seleccion]
-                        if not fila.empty:
-                            precio_sugerido = float(fila.iloc[0]["precio_base"])
+                        row = df_prod[df_prod["nombre"]==prod_sel]
+                        if not row.empty: pre_sug = float(row.iloc[0]["precio_base"])
 
-                # Inputs numéricos
-                col_cant, col_prec = st.columns(2)
-                with col_cant:
-                    cantidad = st.number_input("Cantidad", min_value=1, value=1)
-                with col_prec:
-                    # El usuario puede editar el precio siempre
-                    precio_final = st.number_input("Precio Unitario ($)", min_value=0.0, value=precio_sugerido, step=0.5)
-            
-            st.markdown("---")
-            
-            # --- BOTÓN DE GUARDADO INTELIGENTE ---
-            # Calculamos total visualmente
-            total_operacion = cantidad * precio_final
-            st.metric("Total Estimado", f"${total_operacion:,.2f}")
-            
-            if st.button("💾 GUARDAR PRÉSTAMO", type="primary", use_container_width=True):
-                error_validacion = False
-                
-                # 1. Validaciones
-                if not cliente_final:
-                    st.error("Falta el nombre del cliente.")
-                    error_validacion = True
-                if not producto_final:
-                    st.error("Falta el nombre del producto.")
-                    error_validacion = True
-                    
-                if not error_validacion:
-                    exito_maestros = True
-                    
-                    # 2. Crear Cliente si es nuevo
-                    if cliente_seleccion == "➕ CREAR NUEVO CLIENTE...":
-                        exito_cli = insertar_registro("clientes", {
-                            "nombre": nuevo_cliente_nombre,
-                            "tienda": nuevo_cliente_tienda if nuevo_cliente_tienda else "Sin registrar",
-                            "telefono": "", 
-                            "direccion": ""
-                        })
-                        if not exito_cli: exito_maestros = False
-                    
-                    # 3. Crear Producto si es nuevo
-                    if producto_seleccion == "➕ CREAR NUEVO PRODUCTO...":
-                        exito_prod = insertar_registro("productos", {
-                            "nombre": producto_final,
-                            "categoria": "Otros", # Categoría automática como pediste
-                            "precio_base": precio_final # Guardamos este precio como base futura
-                        })
-                        if not exito_prod: exito_maestros = False
-                        
-                    # 4. Guardar el Préstamo
-                    if exito_maestros:
-                        insertar_registro("prestamos", {
-                            "fecha_registro": datetime.now().strftime("%Y-%m-%d"),
-                            "usuario": usuario_actual,
-                            "cliente": cliente_final,
-                            "producto": producto_final,
-                            "cantidad_pendiente": cantidad,
-                            "precio_unitario": precio_final,
-                            "total_pendiente": total_operacion
-                        })
-                        st.success(f"✅ ¡Listo! {producto_final} asignado a {cliente_final}.")
-                        time.sleep(1.5)
-                        st.rerun()
-                    else:
-                        st.error("Hubo un error creando el cliente o producto nuevo.")
+                cc1, cc2 = st.columns(2)
+                cant = cc1.number_input("Cantidad", 1)
+                precio = cc2.number_input("Precio ($)", value=pre_sug)
 
-    # ==================================================
-    # 📍 SECCIÓN: RUTAS Y COBRO
-    # ==================================================
+            if st.button("💾 GUARDAR", type="primary", use_container_width=True):
+                if cli_final and prod_final:
+                    if cli_sel == "➕ CREAR NUEVO...": insertar_registro("clientes", {"nombre": new_cli_n, "tienda": new_cli_t})
+                    if prod_sel == "➕ CREAR NUEVO...": insertar_registro("productos", {"nombre": prod_final, "categoria": "Otros", "precio_base": precio})
+                    
+                    insertar_registro("prestamos", {
+                        "fecha_registro": datetime.now().strftime("%Y-%m-%d"),
+                        "usuario": usuario_actual,
+                        "cliente": cli_final,
+                        "producto": prod_final,
+                        "cantidad_pendiente": cant,
+                        "precio_unitario": precio,
+                        "total_pendiente": cant*precio
+                    })
+                    st.success("Registrado!"); time.sleep(1); st.rerun()
+                else: st.error("Faltan datos")
+
+    # ==========================================
+    # 2. RUTAS Y COBRO (CON COBRO FLASH)
+    # ==========================================
     elif menu == "📍 Rutas y Cobro":
-        st.title("📍 Gestión de Cobranza")
+        st.title("📍 Cobranza")
         df_pend = cargar_tabla("prestamos")
+        if not df_pend.empty: df_pend = df_pend[df_pend["cantidad_pendiente"] > 0]
         
-        if not df_pend.empty:
-            df_pend = df_pend[df_pend["cantidad_pendiente"] > 0]
-            if df_pend.empty:
-                st.success("✅ Todo al día.")
-            else:
-                lista_clientes = sorted(df_pend["cliente"].unique())
-                sel_cliente = st.selectbox("Cliente a Visitar:", lista_clientes)
-                
-                if not df_cli.empty:
-                    info = df_cli[df_cli["nombre"] == sel_cliente]
-                    if not info.empty:
-                        r = info.iloc[0]
-                        st.info(f"🏠 {r.get('tienda','-')} | 📍 {r.get('direccion','-')}")
+        if df_pend.empty:
+            st.success("✅ Nada pendiente.")
+        else:
+            cli_visita = st.selectbox("Cliente a Visitar:", sorted(df_pend["cliente"].unique()))
+            
+            # Info Cliente
+            if not df_cli.empty:
+                info = df_cli[df_cli["nombre"] == cli_visita]
+                if not info.empty:
+                    st.info(f"🏠 {info.iloc[0].get('tienda','-')} | 📍 {info.iloc[0].get('direccion','-')}")
 
-                datos_cliente = df_pend[df_pend["cliente"] == sel_cliente].copy()
-                datos_cliente["Cobrar"] = 0
-                datos_cliente["Devolver"] = 0
-                
+            datos = df_pend[df_pend["cliente"] == cli_visita].copy()
+            datos["Cobrar"], datos["Devolver"] = 0, 0
+            
+            # --- SECCIÓN COBRO FLASH ---
+            col_flash, col_manual = st.columns([1, 2])
+            with col_flash:
+                st.markdown("#### ⚡ Opción Rápida")
+                if st.button("💰 COBRAR TODO EL STOCK", type="primary", help="Marca TODO lo que tiene el cliente como Vendido y Cobrado"):
+                    hoy = datetime.now().isoformat()
+                    for i, r in datos.iterrows():
+                        cant = int(r["cantidad_pendiente"])
+                        monto = float(cant * r["precio_unitario"])
+                        insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "COBRO", "cliente": cli_visita, "producto": r["producto"], "cantidad": cant, "monto_operacion": monto})
+                        actualizar_prestamo(r["id"], 0, 0)
+                    st.toast("✅ ¡Cobro Total Realizado!"); time.sleep(1); st.rerun()
+
+            with col_manual:
+                st.markdown("#### 📝 Cobro Parcial / Devolución")
                 edited = st.data_editor(
-                    datos_cliente[["id", "producto", "cantidad_pendiente", "precio_unitario", "Cobrar", "Devolver"]],
+                    datos[["id", "producto", "cantidad_pendiente", "precio_unitario", "Cobrar", "Devolver"]],
                     column_config={
                         "id": st.column_config.NumberColumn(disabled=True),
-                        "cantidad_pendiente": st.column_config.NumberColumn("Stock", disabled=True),
+                        "cantidad_pendiente": st.column_config.NumberColumn("En Tienda", disabled=True),
                         "precio_unitario": st.column_config.NumberColumn("Precio", format="$%.2f", disabled=True),
-                        "Cobrar": st.column_config.NumberColumn(min_value=0),
-                        "Devolver": st.column_config.NumberColumn(min_value=0)
+                        "Cobrar": st.column_config.NumberColumn("Vendido", min_value=0),
+                        "Devolver": st.column_config.NumberColumn("Regresa", min_value=0)
                     },
-                    hide_index=True,
-                    key="editor_cobro"
+                    hide_index=True, key="edit_cob"
                 )
-                
-                if st.button("✅ Confirmar Movimiento", type="primary"):
+                if st.button("✅ Procesar Manual"):
                     hoy = datetime.now().isoformat()
-                    procesado = False
+                    proc = False
                     for i, r in edited.iterrows():
                         v, d = r["Cobrar"], r["Devolver"]
                         if v > 0 or d > 0:
-                            procesado = True
-                            if v > 0: insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "COBRO", "cliente": sel_cliente, "producto": r["producto"], "cantidad": int(v), "monto_operacion": float(v*r["precio_unitario"])})
-                            if d > 0: insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "DEVOLUCION", "cliente": sel_cliente, "producto": r["producto"], "cantidad": int(d), "monto_operacion": 0})
-                            actualizar_prestamo(r["id"], int(r["cantidad_pendiente"] - v - d), float((r["cantidad_pendiente"] - v - d) * r["precio_unitario"]))
-                    
-                    if procesado:
-                        st.toast("Guardado")
-                        time.sleep(1)
-                        st.rerun()
+                            proc = True
+                            if v > 0: insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "COBRO", "cliente": cli_visita, "producto": r["producto"], "cantidad": int(v), "monto_operacion": float(v*r["precio_unitario"])})
+                            if d > 0: insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "DEVOLUCION", "cliente": cli_visita, "producto": r["producto"], "cantidad": int(d), "monto_operacion": 0})
+                            actualizar_prestamo(r["id"], int(r["cantidad_pendiente"]-v-d), float((r["cantidad_pendiente"]-v-d)*r["precio_unitario"]))
+                    if proc: st.toast("Procesado"); time.sleep(1); st.rerun()
 
-    # ==================================================
-    # 🛠️ SECCIÓN: ADMINISTRACIÓN
-    # ==================================================
+    # ==========================================
+    # 3. CONSULTAS Y RECIBOS (NUEVO MODULO)
+    # ==========================================
+    elif menu == "🔍 Consultas y Recibos":
+        st.title("🔍 Consultas y Recibos")
+        
+        tab_pend, tab_hist = st.tabs(["📂 Pendientes de Cobro", "📜 Historial (Pagado/Devuelto)"])
+        
+        # --- PENDIENTES ---
+        with tab_pend:
+            st.subheader("Filtro de Deudas")
+            df_p = cargar_tabla("prestamos")
+            if not df_p.empty:
+                df_p = df_p[df_p["cantidad_pendiente"] > 0] # Solo lo activo
+                
+                # Filtros
+                c1, c2 = st.columns(2)
+                filtro_cli = c1.multiselect("Filtrar por Cliente", df_p["cliente"].unique())
+                
+                df_show = df_p if not filtro_cli else df_p[df_p["cliente"].isin(filtro_cli)]
+                
+                st.dataframe(df_show, use_container_width=True)
+                st.metric("Total Deuda en Pantalla", f"${df_show['total_pendiente'].sum():,.2f}")
+                
+                st.divider()
+                st.subheader("🖨️ Generador de Recibos")
+                if len(filtro_cli) == 1:
+                    cliente_recibo = filtro_cli[0]
+                    datos_recibo = df_show[df_show["cliente"] == cliente_recibo]
+                    
+                    st.caption("Copia y pega esto en WhatsApp:")
+                    fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+                    texto_recibo = f"*ESTADO DE CUENTA - GRUPO KORIEL*\n"
+                    texto_recibo += f"📅 Fecha: {fecha_hoy}\n"
+                    texto_recibo += f"👤 Cliente: {cliente_recibo}\n"
+                    texto_recibo += "--------------------------------\n"
+                    total = 0
+                    for i, r in datos_recibo.iterrows():
+                        sub = r['cantidad_pendiente'] * r['precio_unitario']
+                        total += sub
+                        texto_recibo += f"▫️ {r['producto']} (x{r['cantidad_pendiente']}) - ${sub:,.2f}\n"
+                    texto_recibo += "--------------------------------\n"
+                    texto_recibo += f"*💰 TOTAL A PAGAR: ${total:,.2f}*"
+                    
+                    st.code(texto_recibo, language="text")
+                else:
+                    st.info("Selecciona UN solo cliente arriba para generar su recibo detallado.")
+
+        # --- HISTORIAL ---
+        with tab_hist:
+            st.subheader("Historial de Movimientos")
+            df_h = cargar_tabla("historial")
+            if not df_h.empty:
+                # Filtro de Fechas
+                c1, c2 = st.columns(2)
+                fecha_inicio = c1.date_input("Desde", datetime.now() - timedelta(days=7))
+                fecha_fin = c2.date_input("Hasta", datetime.now())
+                
+                # Convertir a datetime para filtrar
+                mask = (df_h['fecha_evento'].dt.date >= fecha_inicio) & (df_h['fecha_evento'].dt.date <= fecha_fin)
+                df_h_filtrado = df_h.loc[mask]
+                
+                st.dataframe(df_h_filtrado.sort_values("fecha_evento", ascending=False), use_container_width=True)
+                
+                st.metric("Dinero Recaudado en este periodo", f"${df_h_filtrado[df_h_filtrado['tipo']=='COBRO']['monto_operacion'].sum():,.2f}")
+
+    # ==========================================
+    # 4. REPORTES FINANCIEROS (MEJORADO)
+    # ==========================================
+    elif menu == "📊 Reportes Financieros":
+        st.title("📊 Balance General")
+        
+        df_p = cargar_tabla("prestamos")
+        df_h = cargar_tabla("historial")
+        
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            st.subheader("🔴 Por Cobrar (En Calle)")
+            if not df_p.empty:
+                deuda_total = df_p["total_pendiente"].sum()
+                st.metric("Capital Pendiente", f"${deuda_total:,.2f}")
+                
+                # Top Deudores
+                deuda_por_cli = df_p.groupby("cliente")["total_pendiente"].sum().sort_values(ascending=False).head(5)
+                st.write("**Top 5 Clientes que más deben:**")
+                st.dataframe(deuda_por_cli)
+        
+        with c2:
+            st.subheader("🟢 Ingresos Reales (Cobrado)")
+            if not df_h.empty:
+                cobros = df_h[df_h["tipo"]=="COBRO"]
+                ganancia_total = cobros["monto_operacion"].sum()
+                st.metric("Total Cobrado (Histórico)", f"${ganancia_total:,.2f}")
+                
+                # Top Productos
+                prod_top = cobros.groupby("producto")["cantidad"].sum().sort_values(ascending=False).head(5)
+                st.write("**Top 5 Productos más vendidos:**")
+                st.dataframe(prod_top)
+
+    # ==========================================
+    # 5. ADMINISTRACIÓN Y CORRECCIÓN
+    # ==========================================
     elif menu == "🛠️ Administración":
-        st.title("🛠️ Maestros")
-        tab1, tab2 = st.tabs(["Clientes", "Productos"])
+        st.title("🛠️ Administración")
+        
+        tab1, tab2 = st.tabs(["📝 Editar Datos Maestros", "➕ Crear Nuevos"])
         
         with tab1:
-            with st.form("fc"):
-                n = st.text_input("Nombre"); t = st.text_input("Tienda"); tel = st.text_input("Tel"); d = st.text_input("Dir")
-                if st.form_submit_button("Crear"):
-                    if n: insertar_registro("clientes", {"nombre": n, "tienda": t, "telefono": tel, "direccion": d}); st.rerun()
-            st.dataframe(df_cli)
+            st.info("Aquí puedes corregir nombres o precios si te equivocaste.")
+            tipo_edit = st.radio("¿Qué quieres editar?", ["Clientes", "Productos"], horizontal=True)
             
-        with tab2:
-            with st.form("fp"):
-                n = st.text_input("Prod"); c = st.selectbox("Cat", ["Varios", "Cables", "Focos"]); p = st.number_input("Precio")
-                if st.form_submit_button("Crear"):
-                    if n: insertar_registro("productos", {"nombre": n, "categoria": c, "precio_base": p}); st.rerun()
-            st.dataframe(df_prod)
+            if tipo_edit == "Clientes":
+                if not df_cli.empty:
+                    cli_a_editar = st.selectbox("Buscar Cliente a Corregir", df_cli["nombre"].unique())
+                    datos_c = df_cli[df_cli["nombre"]==cli_a_editar].iloc[0]
+                    
+                    with st.expander("✏️ Editar Datos del Cliente", expanded=True):
+                        new_n = st.text_input("Nombre", value=datos_c["nombre"])
+                        new_t = st.text_input("Tienda", value=datos_c["tienda"])
+                        new_tel = st.text_input("Teléfono", value=datos_c["telefono"])
+                        new_d = st.text_input("Dirección", value=datos_c["direccion"])
+                        
+                        if st.button("Actualizar Cliente"):
+                            editar_maestro("clientes", int(datos_c["id"]), {"nombre": new_n, "tienda": new_t, "telefono": new_tel, "direccion": new_d})
+                            st.success("Actualizado!"); time.sleep(1); st.rerun()
+            
+            elif tipo_edit == "Productos":
+                if not df_prod.empty:
+                    prod_a_editar = st.selectbox("Buscar Producto a Corregir", df_prod["nombre"].unique())
+                    datos_p = df_prod[df_prod["nombre"]==prod_a_editar].iloc[0]
+                    
+                    with st.expander("✏️ Editar Datos del Producto", expanded=True):
+                        new_np = st.text_input("Nombre", value=datos_p["nombre"])
+                        new_pp = st.number_input("Precio Base", value=float(datos_p["precio_base"]))
+                        new_cat = st.text_input("Categoría", value=datos_p["categoria"])
+                        
+                        if st.button("Actualizar Producto"):
+                            editar_maestro("productos", int(datos_p["id"]), {"nombre": new_np, "precio_base": new_pp, "categoria": new_cat})
+                            st.success("Actualizado!"); time.sleep(1); st.rerun()
 
-    # ==================================================
-    # 📊 SECCIÓN: REPORTES
-    # ==================================================
-    elif menu == "📊 Reportes":
-        st.title("📊 Reportes")
-        df_hist = cargar_tabla("historial")
-        if not df_hist.empty:
-            st.dataframe(df_hist.sort_values("fecha_evento", ascending=False), use_container_width=True)
-            st.metric("Total Cobrado", f"${df_hist[df_hist['tipo']=='COBRO']['monto_operacion'].sum():,.2f}")
+        with tab2:
+            st.write("Usa el alta rápida en 'Nuevo Préstamo' o crea aquí:")
+            with st.form("new_m"):
+                st.write("Crear Cliente Manual")
+                n=st.text_input("Nombre"); t=st.text_input("Tienda")
+                if st.form_submit_button("Crear"):
+                    insertar_registro("clientes", {"nombre":n, "tienda":t})
+                    st.rerun()
 
 # --- INICIO ---
 if check_login():
