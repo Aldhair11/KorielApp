@@ -46,7 +46,7 @@ def insertar_registro(tabla, datos):
         supabase.table(tabla).insert(datos).execute()
         return True
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error guardando: {e}")
         return False
 
 def cargar_tabla(tabla):
@@ -96,22 +96,20 @@ def editar_producto_global(id_row, datos_nuevos, nombre_anterior):
         st.error(f"Error editando producto: {e}")
         return False
 
-# --- NUEVA FUNCIÓN: REVERTIR MOVIMIENTO ---
+# --- NUEVA FUNCIÓN CORREGIDA: REVERTIR MOVIMIENTO ---
 def anular_movimiento(id_historial, usuario_actual):
     try:
-        # 1. Obtener datos del movimiento original antes de borrar
-        resp = supabase.table("historial").select("*").eq("id", id_historia).execute()
+        # 1. Obtener datos del movimiento (CORREGIDO AQUÍ: id_historial)
+        resp = supabase.table("historial").select("*").eq("id", id_historial).execute()
         if not resp.data: return False
         dato = resp.data[0]
         
-        # 2. Buscar el préstamo activo para devolverle el stock
-        # Buscamos coincidencia exacta de cliente y producto
+        # 2. Buscar el préstamo activo
         prestamo = supabase.table("prestamos").select("*").eq("cliente", dato["cliente"]).eq("producto", dato["producto"]).execute()
         
         if prestamo.data:
             p = prestamo.data[0]
-            # MATEMÁTICA INVERSA:
-            # Si cobramos o devolvimos, restamos stock. Para anular, SUMAMOS stock de vuelta.
+            # MATEMÁTICA INVERSA: Devuelve stock o deuda
             nueva_cantidad = p["cantidad_pendiente"] + dato["cantidad"]
             nuevo_total = nueva_cantidad * p["precio_unitario"]
             
@@ -121,7 +119,7 @@ def anular_movimiento(id_historial, usuario_actual):
                 "total_pendiente": nuevo_total
             }).eq("id", p["id"]).execute()
             
-            # 3. Guardar en Log de Anulaciones (Auditoría)
+            # 3. Guardar en Log de Anulaciones
             insertar_registro("anulaciones", {
                 "fecha_error": datetime.now().strftime("%Y-%m-%d"),
                 "usuario_responsable": usuario_actual,
@@ -132,11 +130,11 @@ def anular_movimiento(id_historial, usuario_actual):
                 "monto_anulado": dato["monto_operacion"]
             })
             
-            # 4. Borrar del historial oficial
-            supabase.table("historial").delete().eq("id", id_historia).execute()
+            # 4. Borrar del historial oficial (CORREGIDO AQUÍ: id_historial)
+            supabase.table("historial").delete().eq("id", id_historial).execute()
             return True
         else:
-            st.error("No se encontró el préstamo original para restaurar el stock.")
+            st.error("No se encontró el préstamo original. Tal vez se borró o cambió de nombre.")
             return False
             
     except Exception as e:
@@ -239,12 +237,14 @@ def main_app():
                 precio = cc2.number_input("Precio Unitario ($)", value=pre_sug, step=0.5)
             
             st.divider()
-            obs = st.text_input("📝 Notas (Opcional)", placeholder="Ej: Paga el viernes...")
+            obs = st.text_input("📝 Notas (Opcional)", placeholder="Ej: Paga el viernes, dejar en portería...")
 
             if st.button("💾 GUARDAR PRÉSTAMO", type="primary", use_container_width=True):
                 if cli_final and prod_final:
-                    if cli_sel == "➕ CREAR NUEVO...": insertar_registro("clientes", {"nombre": new_cli_n, "tienda": new_cli_t})
-                    if prod_sel == "➕ CREAR NUEVO...": insertar_registro("productos", {"nombre": prod_final, "categoria": "Otros", "precio_base": precio})
+                    if cli_sel == "➕ CREAR NUEVO...": 
+                        insertar_registro("clientes", {"nombre": new_cli_n, "tienda": new_cli_t})
+                    if prod_sel == "➕ CREAR NUEVO...": 
+                        insertar_registro("productos", {"nombre": prod_final, "categoria": "Otros", "precio_base": precio})
                     
                     insertar_registro("prestamos", {
                         "fecha_registro": datetime.now().strftime("%Y-%m-%d"),
@@ -312,6 +312,7 @@ def main_app():
 
             st.markdown("---")
             st.write("##### 📝 Gestión Manual")
+            
             edited = st.data_editor(
                 datos[["id", "producto", "cantidad_pendiente", "precio_unitario", "observaciones", "Cobrar", "Devolver"]],
                 column_config={
@@ -419,7 +420,7 @@ def main_app():
                     st.warning("Sin movimientos.")
 
     # ==========================================
-    # ⚠️ NUEVO MÓDULO: ANULAR / CORREGIR
+    # ⚠️ MÓDULO: ANULAR / CORREGIR
     # ==========================================
     elif menu == "⚠️ Anular/Corregir":
         st.title("⚠️ Corrección de Errores")
@@ -430,7 +431,6 @@ def main_app():
         with tab_cor:
             df_hist = cargar_tabla("historial")
             if not df_hist.empty:
-                # Filtros para encontrar el error rápido
                 col_f1, col_f2 = st.columns(2)
                 filtro_c = col_f1.selectbox("Filtrar Cliente", ["Todos"] + sorted(df_hist["cliente"].unique().tolist()))
                 
@@ -438,10 +438,8 @@ def main_app():
                 if filtro_c != "Todos":
                     df_view = df_view[df_view["cliente"] == filtro_c]
                 
-                # Mostramos los últimos 20 movimientos
                 st.write("Últimos movimientos registrados:")
                 
-                # Iteramos para mostrar botón de eliminar
                 for index, row in df_view.sort_values("fecha_evento", ascending=False).head(20).iterrows():
                     c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
                     c1.write(f"📅 {row['fecha_evento']}")
@@ -545,14 +543,14 @@ def main_app():
             st.info("Descarga Excel limpia.")
             def clean_csv(df, map_cols): return df.rename(columns=map_cols).to_csv(index=False).encode('utf-8')
             c1, c2 = st.columns(2)
-            if not df_cli.empty: c1.download_button("📥 Clientes", clean_csv(df_cli, {"nombre": "Cliente", "ruc1": "RUC"}), "cli.csv", "text/csv")
             
+            # CARGA DE DATOS PARA BACKUP (FIX NAME ERROR)
             df_p_full = cargar_tabla("prestamos")
-            if not df_p_full.empty: c1.download_button("📥 Préstamos", clean_csv(df_p_full, {"cliente": "Cliente", "total_pendiente": "Deuda"}), "prest.csv", "text/csv")
-            
             df_h_full = cargar_tabla("historial")
-            if not df_h_full.empty: c2.download_button("📥 Historial", clean_csv(df_h_full, {"fecha_evento": "Fecha", "monto_operacion": "Monto"}), "hist.csv", "text/csv")
             
+            if not df_cli.empty: c1.download_button("📥 Clientes", clean_csv(df_cli, {"nombre": "Cliente", "ruc1": "RUC"}), "cli.csv", "text/csv")
+            if not df_p_full.empty: c1.download_button("📥 Préstamos", clean_csv(df_p_full, {"cliente": "Cliente", "total_pendiente": "Deuda"}), "prest.csv", "text/csv")
+            if not df_h_full.empty: c2.download_button("📥 Historial", clean_csv(df_h_full, {"fecha_evento": "Fecha", "monto_operacion": "Monto"}), "hist.csv", "text/csv")
             if not df_prod.empty: c2.download_button("📥 Productos", clean_csv(df_prod, {"nombre": "Producto"}), "prod.csv", "text/csv")
 
 # --- INICIO ---
