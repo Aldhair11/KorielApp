@@ -3,6 +3,7 @@ import pandas as pd
 from supabase import create_client
 from datetime import datetime, timedelta, date
 import time
+import io
 
 # --- 1. CONFIGURACIÓN VISUAL ---
 st.set_page_config(page_title="Grupo Koriel ERP", page_icon="⚡", layout="wide")
@@ -13,6 +14,7 @@ st.markdown("""
     .stRadio > label {display: none;}
     div[data-testid="stMetricValue"] {font-size: 26px; font-weight: bold;}
     
+    /* Estilo Tarjeta de Cliente */
     .client-card {
         background-color: #f8f9fa;
         padding: 15px;
@@ -21,12 +23,16 @@ st.markdown("""
         margin-bottom: 10px;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
     }
-    .stock-card {
-        background-color: #e3f2fd;
-        padding: 10px;
-        border-radius: 5px;
-        border: 1px solid #90caf9;
-        text-align: center;
+    .client-card h3 { margin-top: 0; color: #31333F; }
+    
+    /* Estilo Badge Estado Importación */
+    .status-badge {
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-weight: bold;
+        font-size: 0.85em;
+        background-color: #e0e0e0;
+        color: #333;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -47,25 +53,25 @@ USUARIOS = {
     "maria": "0000"
 }
 
-# --- 4. FUNCIONES DEL MOTOR ---
+# --- 4. FUNCIONES DEL MOTOR (CRUD) ---
 def insertar_registro(tabla, datos):
     try:
         supabase.table(tabla).insert(datos).execute()
         return True
     except Exception as e:
-        st.error(f"Error guardando: {e}")
+        st.error(f"Error guardando en {tabla}: {e}")
         return False
 
 def cargar_tabla(tabla):
     try:
         response = supabase.table(tabla).select("*").execute()
         df = pd.DataFrame(response.data)
-        if "fecha_registro" in df.columns:
-            df["fecha_registro"] = pd.to_datetime(df["fecha_registro"]).dt.date
-        if "fecha_evento" in df.columns:
-            df["fecha_evento"] = pd.to_datetime(df["fecha_evento"])
-        if "fecha" in df.columns: # Para movimientos de stock
-            df["fecha"] = pd.to_datetime(df["fecha"])
+        # Limpieza de fechas
+        cols_fecha = ["fecha_registro", "fecha_evento", "fecha", "fecha_pedido", "fecha_llegada_estimada"]
+        for col in cols_fecha:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col]).dt.date
+        
         if "created_at" in df.columns:
             df = df.drop(columns=["created_at"])
         return df
@@ -79,57 +85,22 @@ def actualizar_prestamo(id_p, cant, total):
             "total_pendiente": total
         }).eq("id", id_p).execute()
     except Exception as e:
-        st.error(f"Error actualizando: {e}")
+        st.error(f"Error actualizando préstamo: {e}")
 
-# --- FUNCIONES DE INVENTARIO (NUEVO) ---
-def mover_inventario(almacen, producto, cantidad, tipo, usuario, motivo):
+def actualizar_estado_importacion(id_imp, nuevo_estado):
     try:
-        # 1. Buscar si ya existe ese producto en ese almacén
-        res = supabase.table("stock_real").select("*").eq("almacen", almacen).eq("producto", producto).execute()
-        stock_actual = 0
-        id_row = None
-        
-        if res.data:
-            stock_actual = res.data[0]["cantidad"]
-            id_row = res.data[0]["id"]
-        
-        # 2. Calcular nuevo stock
-        nuevo_stock = stock_actual
-        if tipo == "ENTRADA":
-            nuevo_stock += cantidad
-        elif tipo == "SALIDA":
-            if stock_actual < cantidad:
-                return False, "Stock insuficiente para realizar la salida."
-            nuevo_stock -= cantidad
-            
-        # 3. Actualizar o Insertar en stock_real
-        if id_row:
-            supabase.table("stock_real").update({"cantidad": nuevo_stock}).eq("id", id_row).execute()
-        else:
-            # Si es salida y no existe, error
-            if tipo == "SALIDA": return False, "No existe el producto en este almacén."
-            supabase.table("stock_real").insert({"almacen": almacen, "producto": producto, "cantidad": nuevo_stock}).execute()
-            
-        # 4. Registrar en historial
-        insertar_registro("movimientos_stock", {
-            "fecha": datetime.now().isoformat(),
-            "usuario": usuario,
-            "tipo": tipo,
-            "almacen": almacen,
-            "producto": producto,
-            "cantidad": cantidad,
-            "motivo": motivo
-        })
-        
-        return True, "Movimiento registrado correctamente."
-        
+        supabase.table("importaciones").update({"estado": nuevo_estado}).eq("id", id_imp).execute()
+        return True
     except Exception as e:
-        return False, str(e)
+        st.error(f"Error actualizando estado: {e}")
+        return False
 
-# --- FUNCIONES DE EDICIÓN SEGURA ---
+# --- FUNCIONES DE GESTIÓN SEGURA (CASCADA) ---
 def editar_cliente_global(id_row, datos_nuevos, nombre_anterior):
     try:
+        # 1. Actualizar Maestro
         supabase.table("clientes").update(datos_nuevos).eq("id", id_row).execute()
+        # 2. Actualizar Historial y Préstamos
         nuevo_nombre = datos_nuevos.get("nombre")
         if nuevo_nombre and nuevo_nombre != nombre_anterior:
             supabase.table("prestamos").update({"cliente": nuevo_nombre}).eq("cliente", nombre_anterior).execute()
@@ -141,12 +112,14 @@ def editar_cliente_global(id_row, datos_nuevos, nombre_anterior):
 
 def editar_producto_global(id_row, datos_nuevos, nombre_anterior):
     try:
+        # 1. Actualizar Maestro
         supabase.table("productos").update(datos_nuevos).eq("id", id_row).execute()
+        # 2. Actualizar todo el sistema
         nuevo_nombre = datos_nuevos.get("nombre")
         if nuevo_nombre and nuevo_nombre != nombre_anterior:
             supabase.table("prestamos").update({"producto": nuevo_nombre}).eq("producto", nombre_anterior).execute()
             supabase.table("historial").update({"producto": nuevo_nombre}).eq("producto", nombre_anterior).execute()
-            # Actualizar también en stock real y movimientos
+            # También actualizamos stock e inventario
             supabase.table("stock_real").update({"producto": nuevo_nombre}).eq("producto", nombre_anterior).execute()
             supabase.table("movimientos_stock").update({"producto": nuevo_nombre}).eq("producto", nombre_anterior).execute()
         return True
@@ -154,17 +127,62 @@ def editar_producto_global(id_row, datos_nuevos, nombre_anterior):
         st.error(f"Error editando producto: {e}")
         return False
 
-# --- FUNCIÓN REVERTIR MOVIMIENTO ---
+# --- FUNCIONES DE INVENTARIO (WMS) ---
+def mover_inventario(almacen, producto, cantidad, tipo, usuario, motivo):
+    try:
+        # Verificar stock actual
+        res = supabase.table("stock_real").select("*").eq("almacen", almacen).eq("producto", producto).execute()
+        stock_actual = 0
+        id_row = None
+        
+        if res.data:
+            stock_actual = res.data[0]["cantidad"]
+            id_row = res.data[0]["id"]
+        
+        # Calcular
+        nuevo_stock = stock_actual
+        if tipo == "ENTRADA":
+            nuevo_stock += cantidad
+        elif tipo == "SALIDA":
+            if stock_actual < cantidad:
+                return False, "⛔ Stock insuficiente en este almacén."
+            nuevo_stock -= cantidad
+            
+        # Guardar Stock
+        if id_row:
+            supabase.table("stock_real").update({"cantidad": nuevo_stock}).eq("id", id_row).execute()
+        else:
+            if tipo == "SALIDA": return False, "⛔ El producto no existe en este almacén."
+            supabase.table("stock_real").insert({"almacen": almacen, "producto": producto, "cantidad": nuevo_stock}).execute()
+            
+        # Registrar Movimiento
+        insertar_registro("movimientos_stock", {
+            "fecha": datetime.now().isoformat(),
+            "usuario": usuario,
+            "tipo": tipo,
+            "almacen": almacen,
+            "producto": producto,
+            "cantidad": cantidad,
+            "motivo": motivo
+        })
+        return True, "Movimiento registrado."
+    except Exception as e:
+        return False, str(e)
+
+# --- FUNCIONES DE ANULACIÓN (CTRL+Z) ---
 def anular_movimiento(id_historial, usuario_actual):
     try:
+        # 1. Obtener datos
         resp = supabase.table("historial").select("*").eq("id", id_historial).execute()
         if not resp.data: return False
         dato = resp.data[0]
         
+        # 2. Buscar préstamo activo
         prestamo = supabase.table("prestamos").select("*").eq("cliente", dato["cliente"]).eq("producto", dato["producto"]).execute()
         
         if prestamo.data:
             p = prestamo.data[0]
+            # Invertir operación
             nueva_cantidad = p["cantidad_pendiente"] + dato["cantidad"]
             nuevo_total = nueva_cantidad * p["precio_unitario"]
             
@@ -173,6 +191,7 @@ def anular_movimiento(id_historial, usuario_actual):
                 "total_pendiente": nuevo_total
             }).eq("id", p["id"]).execute()
             
+            # Auditoría
             insertar_registro("anulaciones", {
                 "fecha_error": datetime.now().strftime("%Y-%m-%d"),
                 "usuario_responsable": usuario_actual,
@@ -183,12 +202,12 @@ def anular_movimiento(id_historial, usuario_actual):
                 "monto_anulado": dato["monto_operacion"]
             })
             
+            # Borrar
             supabase.table("historial").delete().eq("id", id_historial).execute()
             return True
         else:
             st.error("No se encontró el préstamo original.")
             return False
-            
     except Exception as e:
         st.error(f"Error al anular: {e}")
         return False
@@ -199,19 +218,21 @@ def check_login():
         return True
     
     st.session_state["usuario_logueado"] = None
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("<h1 style='text-align: center;'>🔐 GRUPO KORIEL CLOUD</h1>", unsafe_allow_html=True)
     
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
         user = st.text_input("Usuario")
         password = st.text_input("Contraseña", type="password")
-        if st.button("Entrar al Sistema", use_container_width=True, type="primary"):
+        if st.button("Ingresar al Sistema", use_container_width=True, type="primary"):
             if user in USUARIOS and USUARIOS[user] == password:
                 st.session_state["usuario_logueado"] = user
+                st.toast(f"¡Bienvenido {user}!")
+                time.sleep(0.5)
                 st.rerun()
             else:
-                st.error("Usuario o contraseña incorrectos")
+                st.error("Credenciales incorrectas")
     return False
 
 def logout():
@@ -229,7 +250,8 @@ def main_app():
         menu = st.radio("Navegación", [
             "📦 Nuevo Préstamo", 
             "📍 Rutas y Cobro", 
-            "🏭 Inventario y Almacenes", # NUEVO MODULO
+            "🚢 Importaciones", 
+            "🏭 Inventario y Almacenes", 
             "🔍 Consultas y Recibos", 
             "⚠️ Anular/Corregir", 
             "📊 Reportes Financieros", 
@@ -239,21 +261,124 @@ def main_app():
         if st.button("Cerrar Sesión"):
             logout()
 
+    # Cargar Maestros
     df_cli = cargar_tabla("clientes")
     df_prod = cargar_tabla("productos")
 
     # ==========================================
-    # 📦 NUEVO PRÉSTAMO
+    # 🚢 MÓDULO: IMPORTACIONES (COMPRAS)
     # ==========================================
-    if menu == "📦 Nuevo Préstamo":
+    if menu == "🚢 Importaciones":
+        st.title("🚢 Gestión de Importaciones")
+        
+        tab_dash, tab_new, tab_prov = st.tabs(["📊 Seguimiento de Pedidos", "➕ Nueva Orden de Compra", "🌍 Proveedores"])
+        
+        df_imp = cargar_tabla("importaciones")
+        df_prov = cargar_tabla("proveedores")
+        
+        # --- TAB 1: DASHBOARD ---
+        with tab_dash:
+            if not df_imp.empty:
+                # Métricas
+                tot_imp = df_imp["monto_total"].sum()
+                en_camino = df_imp[df_imp["estado"].isin(["En Tránsito", "Aduanas"])]["monto_total"].sum()
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Importado (Año)", f"${tot_imp:,.2f}")
+                c2.metric("Dinero Flotando (En camino)", f"${en_camino:,.2f}")
+                c3.metric("Órdenes Activas", len(df_imp[df_imp["estado"] != "Recibido"]))
+                
+                st.divider()
+                st.subheader("📋 Lista de Pedidos")
+                
+                filtro_est = st.multiselect("Filtrar Estado", ["Pedido", "Producción", "En Tránsito", "Aduanas", "Recibido"])
+                df_show = df_imp if not filtro_est else df_imp[df_imp["estado"].isin(filtro_est)]
+                
+                for index, row in df_show.sort_values("fecha_pedido", ascending=False).iterrows():
+                    with st.expander(f"{row['estado']} | {row['codigo_pedido']} - {row['proveedor']} (${row['monto_total']:,.2f})"):
+                        c1, c2 = st.columns([2, 1])
+                        with c1:
+                            st.write(f"📅 **Fecha Pedido:** {row['fecha_pedido']}")
+                            st.write(f"🚢 **Llegada Estimada:** {row['fecha_llegada_estimada']}")
+                            st.write(f"🆔 **Tracking:** {row['tracking_number']}")
+                            st.write(f"📝 **Notas:** {row['observaciones']}")
+                            if row['link_factura']:
+                                st.markdown(f"📄 [Ver Documentos]({row['link_factura']})")
+                        
+                        with c2:
+                            st.write("**Actualizar Estado:**")
+                            estados = ["Pedido", "Producción", "En Tránsito", "Aduanas", "Recibido"]
+                            idx_est = estados.index(row['estado']) if row['estado'] in estados else 0
+                            new_est = st.selectbox("Estado", estados, index=idx_est, key=f"st_{row['id']}")
+                            
+                            if new_est != row['estado']:
+                                if st.button("💾 Guardar Cambio", key=f"btn_{row['id']}"):
+                                    actualizar_estado_importacion(row['id'], new_est)
+                                    st.success("Actualizado")
+                                    time.sleep(1)
+                                    st.rerun()
+            else:
+                st.info("No hay importaciones registradas.")
+
+        # --- TAB 2: NUEVA ORDEN ---
+        with tab_new:
+            st.subheader("Nueva Orden de Compra")
+            if df_prov.empty:
+                st.warning("Registra proveedores primero.")
+            else:
+                with st.form("form_imp"):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        cod = st.text_input("Código Pedido / Invoice", placeholder="Ej: PO-2024-001")
+                        prov = st.selectbox("Proveedor", sorted(df_prov["nombre"].unique()))
+                        f_ped = st.date_input("Fecha Pedido")
+                        f_lleg = st.date_input("Fecha Llegada Estimada")
+                    with c2:
+                        monto = st.number_input("Monto Total ($)", min_value=0.0)
+                        track = st.text_input("Tracking Number")
+                        link = st.text_input("Link Factura (Drive)", help="Pega el enlace")
+                        obs = st.text_input("Detalle Productos")
+                    
+                    if st.form_submit_button("Crear Orden"):
+                        if cod and monto > 0:
+                            insertar_registro("importaciones", {
+                                "codigo_pedido": cod, "proveedor": prov, "fecha_pedido": f_ped.isoformat(),
+                                "fecha_llegada_estimada": f_lleg.isoformat(), "monto_total": monto,
+                                "tracking_number": track, "link_factura": link, "observaciones": obs,
+                                "estado": "Pedido"
+                            })
+                            st.success("Orden creada")
+                            time.sleep(1); st.rerun()
+                        else: st.error("Faltan datos")
+
+        # --- TAB 3: PROVEEDORES ---
+        with tab_prov:
+            st.subheader("Directorio de Proveedores")
+            with st.form("new_prov"):
+                c1, c2 = st.columns(2)
+                n = c1.text_input("Empresa"); p = c2.text_input("País")
+                cont = c1.text_input("Contacto"); em = c2.text_input("Email")
+                if st.form_submit_button("Guardar Proveedor"):
+                    insertar_registro("proveedores", {"nombre": n, "pais": p, "contacto": cont, "email": em})
+                    st.success("Guardado"); st.rerun()
+            st.dataframe(df_prov, use_container_width=True)
+
+    # ==========================================
+    # 📦 MÓDULO: NUEVO PRÉSTAMO
+    # ==========================================
+    elif menu == "📦 Nuevo Préstamo":
         st.title("📦 Registrar Salida (Préstamo)")
+        
         df_deudas = cargar_tabla("prestamos")
         
+        # Listas inteligentes
         lista_c = ["➕ CREAR NUEVO..."] + sorted(df_cli["nombre"].unique().tolist()) if not df_cli.empty else ["➕ CREAR NUEVO..."]
         lista_p = ["➕ CREAR NUEVO..."] + sorted(df_prod["nombre"].unique().tolist()) if not df_prod.empty else ["➕ CREAR NUEVO..."]
 
         with st.container(border=True):
             c1, c2 = st.columns(2)
+            
+            # CLIENTE
             with c1:
                 st.subheader("1. Cliente")
                 cli_sel = st.selectbox("Buscar Cliente", lista_c)
@@ -268,13 +393,17 @@ def main_app():
                     cli_final = cli_sel
                     if not df_deudas.empty:
                         deuda = df_deudas[(df_deudas["cliente"] == cli_final)]["total_pendiente"].sum()
-                        if deuda > 0: st.error(f"⚠️ **RIESGO:** Debe **${deuda:,.2f}**")
-                        else: st.success("✅ Cliente al día.")
+                        if deuda > 0: 
+                            st.error(f"⚠️ **RIESGO:** Deuda actual: **${deuda:,.2f}**")
+                        else: 
+                            st.success("✅ Cliente sin deuda.")
             
+            # PRODUCTO
             with c2:
                 st.subheader("2. Producto")
                 prod_sel = st.selectbox("Buscar Producto", lista_p)
                 prod_final = None; pre_sug = 0.0
+                
                 if prod_sel == "➕ CREAR NUEVO...":
                     st.info("⚡ Alta Rápida")
                     prod_final = st.text_input("Descripción Producto")
@@ -285,16 +414,19 @@ def main_app():
                         if not row.empty: pre_sug = float(row.iloc[0]["precio_base"])
 
                 cc1, cc2 = st.columns(2)
-                cant = cc1.number_input("Cantidad", 1)
+                cant = cc1.number_input("Cantidad", min_value=1, value=1)
                 precio = cc2.number_input("Precio Unitario ($)", value=pre_sug, step=0.5)
             
             st.divider()
-            obs = st.text_input("📝 Notas", placeholder="Ej: Paga el viernes...")
+            obs = st.text_input("📝 Observaciones (Opcional)", placeholder="Ej: Paga el fin de semana...")
 
             if st.button("💾 GUARDAR PRÉSTAMO", type="primary", use_container_width=True):
                 if cli_final and prod_final:
-                    if cli_sel == "➕ CREAR NUEVO...": insertar_registro("clientes", {"nombre": new_cli_n, "tienda": new_cli_t})
-                    if prod_sel == "➕ CREAR NUEVO...": insertar_registro("productos", {"nombre": prod_final, "categoria": "Otros", "precio_base": precio})
+                    # Crear nuevos si aplica
+                    if cli_sel == "➕ CREAR NUEVO...": 
+                        insertar_registro("clientes", {"nombre": new_cli_n, "tienda": new_cli_t})
+                    if prod_sel == "➕ CREAR NUEVO...": 
+                        insertar_registro("productos", {"nombre": prod_final, "categoria": "Otros", "precio_base": precio})
                     
                     insertar_registro("prestamos", {
                         "fecha_registro": datetime.now().strftime("%Y-%m-%d"),
@@ -306,14 +438,16 @@ def main_app():
                         "total_pendiente": cant*precio,
                         "observaciones": obs
                     })
-                    st.success(f"✅ Asignado a {cli_final}"); time.sleep(1); st.rerun()
-                else: st.error("Faltan datos.")
+                    st.success(f"✅ Asignado a {cli_final}"); time.sleep(1.5); st.rerun()
+                else: 
+                    st.error("Faltan datos.")
 
     # ==========================================
-    # 📍 RUTAS Y COBRO
+    # 📍 MÓDULO: RUTAS Y COBRO
     # ==========================================
     elif menu == "📍 Rutas y Cobro":
         st.title("📍 Gestión de Cobranza")
+        
         df_pend = cargar_tabla("prestamos")
         if not df_pend.empty: df_pend = df_pend[df_pend["cantidad_pendiente"] > 0]
         
@@ -324,6 +458,7 @@ def main_app():
             datos = df_pend[df_pend["cliente"] == cli_visita].copy()
             deuda_total = datos["total_pendiente"].sum()
             
+            # TARJETA INFO
             with st.container(border=True):
                 c_info, c_total = st.columns([3, 1])
                 with c_info:
@@ -332,18 +467,17 @@ def main_app():
                         if not info.empty:
                             r = info.iloc[0]
                             st.markdown(f"🏠 **{r.get('tienda','-')}** | 📍 {r.get('direccion','-')} | 📞 {r.get('telefono','-')}")
-                            ruc_txt = f"🆔 **RUC:** {r.get('ruc1', 'N/A')}"
-                            if r.get('ruc2'): ruc_txt += f" / {r.get('ruc2')}"
-                            st.markdown(ruc_txt)
+                            st.markdown(f"🆔 **RUC:** {r.get('ruc1', 'N/A')} / {r.get('ruc2', '-')}")
                 with c_total:
                     st.metric("DEUDA TOTAL", f"${deuda_total:,.2f}")
 
             datos["Cobrar"] = 0; datos["Devolver"] = 0
             if "observaciones" not in datos.columns: datos["observaciones"] = ""
 
+            # BOTONES FLASH
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("💰 COBRAR TODO", type="primary", use_container_width=True):
+                if st.button("💰 COBRAR TODO (Pagó 100%)", type="primary", use_container_width=True):
                     hoy = datetime.now().isoformat()
                     for i, r in datos.iterrows():
                         cant = int(r["cantidad_pendiente"])
@@ -352,7 +486,7 @@ def main_app():
                         actualizar_prestamo(r["id"], 0, 0)
                     st.toast("✅ ¡Cobrado!"); time.sleep(1); st.rerun()
             with c2:
-                if st.button("🔙 DEVOLVER TODO", use_container_width=True):
+                if st.button("🔙 DEVOLVER TODO (No vendió)", use_container_width=True):
                     hoy = datetime.now().isoformat()
                     for i, r in datos.iterrows():
                         cant = int(r["cantidad_pendiente"])
@@ -362,6 +496,7 @@ def main_app():
 
             st.markdown("---")
             st.write("##### 📝 Gestión Manual")
+            
             edited = st.data_editor(
                 datos[["id", "producto", "cantidad_pendiente", "precio_unitario", "observaciones", "Cobrar", "Devolver"]],
                 column_config={
@@ -375,10 +510,11 @@ def main_app():
             )
             
             pay_now = (edited["Cobrar"] * edited["precio_unitario"]).sum()
-            cp1, cp2 = st.columns([2, 1])
-            with cp1:
+            
+            c_pay, c_btn = st.columns([2, 1])
+            with c_pay:
                 if pay_now > 0: st.success(f"💵 PAGA AHORA: **${pay_now:,.2f}**")
-            with cp2:
+            with c_btn:
                 if st.button("✅ Procesar", use_container_width=True):
                     hoy = datetime.now().isoformat()
                     p = False
@@ -388,12 +524,13 @@ def main_app():
                             p = True
                             if v > 0: insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "COBRO", "cliente": cli_visita, "producto": r["producto"], "cantidad": int(v), "monto_operacion": float(v*r["precio_unitario"])})
                             if d > 0: insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "DEVOLUCION", "cliente": cli_visita, "producto": r["producto"], "cantidad": int(d), "monto_operacion": 0})
+                            
                             new_c = int(r["cantidad_pendiente"]-v-d)
                             actualizar_prestamo(r["id"], new_c, float(new_c*r["precio_unitario"]))
                     if p: st.toast("Procesado"); time.sleep(1); st.rerun()
 
     # ==========================================
-    # 🏭 MÓDULO NUEVO: INVENTARIO Y ALMACENES
+    # 🏭 MÓDULO: INVENTARIO Y ALMACENES
     # ==========================================
     elif menu == "🏭 Inventario y Almacenes":
         st.title("🏭 Gestión de Almacenes")
@@ -405,69 +542,53 @@ def main_app():
         
         # --- TAB 1: MOVIMIENTOS ---
         with tab_mov:
-            st.subheader("Entrada / Salida de Mercadería")
+            st.subheader("Entrada / Salida")
             if df_alm.empty:
-                st.warning("Primero crea un almacén en la pestaña 'Crear Almacén'.")
+                st.warning("Primero crea un almacén.")
             else:
                 c1, c2 = st.columns(2)
                 with c1:
-                    tipo_mov = st.selectbox("Tipo de Movimiento", ["ENTRADA (Compra)", "SALIDA (A Tienda/Venta)"])
+                    tipo_mov = st.selectbox("Tipo Movimiento", ["ENTRADA (Compra)", "SALIDA (A Tienda/Venta)"])
                     alm_mov = st.selectbox("Almacén", sorted(df_alm["nombre"].unique()))
                     prod_mov = st.selectbox("Producto", sorted(df_prod["nombre"].unique()) if not df_prod.empty else [])
                 
                 with c2:
                     cant_mov = st.number_input("Cantidad", min_value=1, value=1)
-                    motivo_mov = st.text_input("Motivo / Detalle", placeholder="Ej: Compra Factura 123, Stockeo de Lunes...")
+                    motivo_mov = st.text_input("Motivo / Detalle")
                 
-                if st.button("💾 Registrar Movimiento", type="primary", use_container_width=True):
+                if st.button("💾 Registrar Movimiento", type="primary"):
                     if prod_mov:
                         ok, msg = mover_inventario(alm_mov, prod_mov, cant_mov, "ENTRADA" if "ENTRADA" in tipo_mov else "SALIDA", usuario_actual, motivo_mov)
-                        if ok:
-                            st.success(msg)
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                    else:
-                        st.error("Selecciona un producto.")
+                        if ok: st.success(msg); time.sleep(1); st.rerun()
+                        else: st.error(msg)
+                    else: st.error("Selecciona un producto.")
 
-        # --- TAB 2: STOCK ACTUAL ---
+        # --- TAB 2: STOCK ---
         with tab_stock:
-            st.subheader("Inventario Físico Real")
+            st.subheader("Inventario Físico")
             if not df_stock.empty:
-                # Filtro por almacén
-                filtro_alm = st.multiselect("Filtrar por Almacén", sorted(df_stock["almacen"].unique()))
+                filtro_alm = st.multiselect("Filtrar Almacén", sorted(df_stock["almacen"].unique()))
                 df_view = df_stock.copy()
-                if filtro_alm:
-                    df_view = df_view[df_view["almacen"].isin(filtro_alm)]
+                if filtro_alm: df_view = df_view[df_view["almacen"].isin(filtro_alm)]
                 
-                # Mostrar tabla
                 st.dataframe(df_view[["almacen", "producto", "cantidad"]].sort_values("almacen"), use_container_width=True)
                 
-                # Resumen
                 st.divider()
-                st.write("**Resumen Total (Todos los almacenes):**")
+                st.write("**Total Consolidado:**")
                 st.dataframe(df_view.groupby("producto")["cantidad"].sum().sort_values(ascending=False))
-            else:
-                st.info("No hay stock registrado aún.")
+            else: st.info("Sin stock registrado.")
 
         # --- TAB 3: CREAR ALMACÉN ---
         with tab_alm:
-            st.subheader("Configurar Almacenes")
             with st.form("new_alm"):
-                n_alm = st.text_input("Nombre del Almacén", placeholder="Ej: Depósito Central")
+                n_alm = st.text_input("Nombre Almacén")
                 if st.form_submit_button("Crear"):
-                    if n_alm:
-                        insertar_registro("almacenes", {"nombre": n_alm})
-                        st.success("Almacén creado")
-                        st.rerun()
-            
-            st.write("Almacenes existentes:")
-            if not df_alm.empty:
-                st.dataframe(df_alm["nombre"], use_container_width=True)
+                    insertar_registro("almacenes", {"nombre": n_alm})
+                    st.success("Creado"); st.rerun()
+            if not df_alm.empty: st.dataframe(df_alm["nombre"], use_container_width=True)
 
     # ==========================================
-    # 🔍 MÓDULO CONSULTAS
+    # 🔍 MÓDULO: CONSULTAS Y RECIBOS
     # ==========================================
     elif menu == "🔍 Consultas y Recibos":
         st.title("🔍 Consultas")
@@ -491,7 +612,7 @@ def main_app():
                 st.dataframe(df_s, use_container_width=True)
                 st.metric("Total Mostrado", f"${df_s['total_pendiente'].sum():,.2f}")
                 
-                if st.button("🖨️ Generar Recibo WhatsApp"):
+                if st.button("🖨️ Generar Texto WhatsApp (Recibo)"):
                     txt = f"*ESTADO DE CUENTA*\n📅 {datetime.now().strftime('%d/%m/%Y')}\n----------------\n"
                     for c in df_s["cliente"].unique():
                         txt += f"👤 {c}:\n"
@@ -543,17 +664,20 @@ def main_app():
                     st.warning("Sin movimientos.")
 
     # ==========================================
-    # ⚠️ ANULAR / CORREGIR
+    # ⚠️ MÓDULO: ANULAR / CORREGIR
     # ==========================================
     elif menu == "⚠️ Anular/Corregir":
         st.title("⚠️ Corrección de Errores")
-        tab_cor, tab_log = st.tabs(["↩️ Deshacer", "📜 Historial"])
+        st.warning("ANULAR pagos o devoluciones. El stock y deuda se restauran.")
+        
+        tab_cor, tab_log = st.tabs(["↩️ Deshacer", "📜 Log"])
         
         with tab_cor:
             df_hist = cargar_tabla("historial")
             if not df_hist.empty:
-                col_f1, col_f2 = st.columns(2)
-                filtro_c = col_f1.selectbox("Filtrar Cliente", ["Todos"] + sorted(df_hist["cliente"].unique().tolist()))
+                c_fil, _ = st.columns(2)
+                filtro_c = c_fil.selectbox("Filtrar por Cliente", ["Todos"] + sorted(df_hist["cliente"].unique().tolist()))
+                
                 df_view = df_hist.copy()
                 if filtro_c != "Todos": df_view = df_view[df_view["cliente"] == filtro_c]
                 
@@ -563,7 +687,8 @@ def main_app():
                     c1.write(f"📅 {row['fecha_evento']}")
                     c2.write(f"👤 {row['cliente']}")
                     c3.write(f"📦 {row['producto']} (x{row['cantidad']})")
-                    c4.write(f"💰 {row['tipo']}")
+                    c4.write(f"💰 {row['tipo']} (${row['monto_operacion']})")
+                    
                     if c5.button("ANULAR ❌", key=f"del_{row['id']}"):
                         if anular_movimiento(row['id'], usuario_actual):
                             st.success("¡Anulado!"); time.sleep(1); st.rerun()
@@ -574,12 +699,12 @@ def main_app():
             if not df_anul.empty: st.dataframe(df_anul.sort_values("id", ascending=False), use_container_width=True)
 
     # ==========================================
-    # 📊 REPORTES FINANCIEROS
+    # 📊 MÓDULO: REPORTES
     # ==========================================
     elif menu == "📊 Reportes Financieros":
         st.title("📊 Balance General")
         c1, c2 = st.columns(2)
-        f_cli = c1.multiselect("Filtrar Cliente", sorted(df_cli["nombre"].unique()) if not df_cli.empty else [])
+        f_cli = c1.multiselect("Cliente", sorted(df_cli["nombre"].unique()) if not df_cli.empty else [])
         f_fec = c2.date_input("Periodo", [date.today().replace(day=1), date.today()])
         
         df_p = cargar_tabla("prestamos")
@@ -605,7 +730,7 @@ def main_app():
                 st.dataframe(cob.groupby("cliente")["monto_operacion"].sum().sort_values(ascending=False))
 
     # ==========================================
-    # 🛠️ ADMINISTRACIÓN
+    # 🛠️ MÓDULO: ADMINISTRACIÓN
     # ==========================================
     elif menu == "🛠️ Administración":
         st.title("🛠️ Administración")
@@ -654,22 +779,24 @@ def main_app():
             def clean_csv(df, map_cols): return df.rename(columns=map_cols).to_csv(index=False).encode('utf-8')
             c1, c2 = st.columns(2)
             
-            # Cargar Datos para Backup
+            # CARGAR DATOS PARA BACKUP (FIX VITAL)
             df_p_full = cargar_tabla("prestamos")
             df_h_full = cargar_tabla("historial")
-            df_s_full = cargar_tabla("stock_real") # Stock
-            df_m_full = cargar_tabla("movimientos_stock") # Movimientos
+            df_s_full = cargar_tabla("stock_real")
+            df_m_full = cargar_tabla("movimientos_stock")
+            df_imp_full = cargar_tabla("importaciones")
             
             if not df_cli.empty: c1.download_button("📥 Clientes", clean_csv(df_cli, {"nombre": "Cliente", "ruc1": "RUC"}), "cli.csv", "text/csv")
             if not df_p_full.empty: c1.download_button("📥 Préstamos", clean_csv(df_p_full, {"cliente": "Cliente", "total_pendiente": "Deuda"}), "prest.csv", "text/csv")
-            if not df_h_full.empty: c2.download_button("📥 Historial Cobros", clean_csv(df_h_full, {"fecha_evento": "Fecha", "monto_operacion": "Monto"}), "hist.csv", "text/csv")
+            if not df_h_full.empty: c2.download_button("📥 Historial", clean_csv(df_h_full, {"fecha_evento": "Fecha", "monto_operacion": "Monto"}), "hist.csv", "text/csv")
             if not df_prod.empty: c2.download_button("📥 Productos", clean_csv(df_prod, {"nombre": "Producto"}), "prod.csv", "text/csv")
             
             st.write("---")
-            st.write("Backups de Inventario:")
+            st.write("Backups Inventario / Importaciones:")
             c3, c4 = st.columns(2)
-            if not df_s_full.empty: c3.download_button("📥 Stock Actual", clean_csv(df_s_full, {"almacen": "Almacén", "producto": "Producto"}), "stock.csv", "text/csv")
-            if not df_m_full.empty: c4.download_button("📥 Movimientos Almacén", clean_csv(df_m_full, {"tipo": "Movimiento", "cantidad": "Cant"}), "mov_stock.csv", "text/csv")
+            if not df_s_full.empty: c3.download_button("📥 Stock Real", clean_csv(df_s_full, {"cantidad": "Stock"}), "stock.csv", "text/csv")
+            if not df_m_full.empty: c4.download_button("📥 Movimientos Almacén", clean_csv(df_m_full, {"tipo": "Tipo"}), "movs.csv", "text/csv")
+            if not df_imp_full.empty: c3.download_button("📥 Importaciones", clean_csv(df_imp_full, {"codigo_pedido": "PO"}), "imports.csv", "text/csv")
 
 # --- INICIO ---
 if check_login():
