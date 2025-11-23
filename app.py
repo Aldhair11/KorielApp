@@ -21,7 +21,6 @@ st.markdown("""
         margin-bottom: 10px;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
     }
-    .client-card h3 { margin-top: 0; color: #31333F; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,7 +46,7 @@ def insertar_registro(tabla, datos):
         supabase.table(tabla).insert(datos).execute()
         return True
     except Exception as e:
-        st.error(f"Error guardando: {e}")
+        st.error(f"Error: {e}")
         return False
 
 def cargar_tabla(tabla):
@@ -73,7 +72,6 @@ def actualizar_prestamo(id_p, cant, total):
     except Exception as e:
         st.error(f"Error actualizando: {e}")
 
-# --- FUNCIONES DE EDICIÓN SEGURA ---
 def editar_cliente_global(id_row, datos_nuevos, nombre_anterior):
     try:
         supabase.table("clientes").update(datos_nuevos).eq("id", id_row).execute()
@@ -98,6 +96,53 @@ def editar_producto_global(id_row, datos_nuevos, nombre_anterior):
         st.error(f"Error editando producto: {e}")
         return False
 
+# --- NUEVA FUNCIÓN: REVERTIR MOVIMIENTO ---
+def anular_movimiento(id_historial, usuario_actual):
+    try:
+        # 1. Obtener datos del movimiento original antes de borrar
+        resp = supabase.table("historial").select("*").eq("id", id_historia).execute()
+        if not resp.data: return False
+        dato = resp.data[0]
+        
+        # 2. Buscar el préstamo activo para devolverle el stock
+        # Buscamos coincidencia exacta de cliente y producto
+        prestamo = supabase.table("prestamos").select("*").eq("cliente", dato["cliente"]).eq("producto", dato["producto"]).execute()
+        
+        if prestamo.data:
+            p = prestamo.data[0]
+            # MATEMÁTICA INVERSA:
+            # Si cobramos o devolvimos, restamos stock. Para anular, SUMAMOS stock de vuelta.
+            nueva_cantidad = p["cantidad_pendiente"] + dato["cantidad"]
+            nuevo_total = nueva_cantidad * p["precio_unitario"]
+            
+            # Actualizamos el préstamo
+            supabase.table("prestamos").update({
+                "cantidad_pendiente": nueva_cantidad,
+                "total_pendiente": nuevo_total
+            }).eq("id", p["id"]).execute()
+            
+            # 3. Guardar en Log de Anulaciones (Auditoría)
+            insertar_registro("anulaciones", {
+                "fecha_error": datetime.now().strftime("%Y-%m-%d"),
+                "usuario_responsable": usuario_actual,
+                "accion_original": dato["tipo"],
+                "cliente": dato["cliente"],
+                "producto": dato["producto"],
+                "cantidad_restaurada": dato["cantidad"],
+                "monto_anulado": dato["monto_operacion"]
+            })
+            
+            # 4. Borrar del historial oficial
+            supabase.table("historial").delete().eq("id", id_historia).execute()
+            return True
+        else:
+            st.error("No se encontró el préstamo original para restaurar el stock.")
+            return False
+            
+    except Exception as e:
+        st.error(f"Error al anular: {e}")
+        return False
+
 # --- 5. LOGIN ---
 def check_login():
     if "usuario_logueado" in st.session_state and st.session_state["usuario_logueado"]:
@@ -116,7 +161,7 @@ def check_login():
                 st.session_state["usuario_logueado"] = user
                 st.rerun()
             else:
-                st.error("Datos incorrectos")
+                st.error("Usuario o contraseña incorrectos")
     return False
 
 def logout():
@@ -135,6 +180,7 @@ def main_app():
             "📦 Nuevo Préstamo", 
             "📍 Rutas y Cobro", 
             "🔍 Consultas y Recibos", 
+            "⚠️ Anular/Corregir", 
             "📊 Reportes Financieros", 
             "🛠️ Administración"
         ])
@@ -178,9 +224,10 @@ def main_app():
                 st.subheader("2. Producto")
                 prod_sel = st.selectbox("Buscar Producto", lista_p)
                 prod_final = None; pre_sug = 0.0
+                
                 if prod_sel == "➕ CREAR NUEVO...":
                     st.info("⚡ Alta Rápida")
-                    prod_final = st.text_input("Descripción")
+                    prod_final = st.text_input("Descripción Producto")
                 else:
                     prod_final = prod_sel
                     if not df_prod.empty:
@@ -189,17 +236,15 @@ def main_app():
 
                 cc1, cc2 = st.columns(2)
                 cant = cc1.number_input("Cantidad", 1)
-                precio = cc2.number_input("Precio ($)", value=pre_sug, step=0.5)
+                precio = cc2.number_input("Precio Unitario ($)", value=pre_sug, step=0.5)
             
             st.divider()
             obs = st.text_input("📝 Notas (Opcional)", placeholder="Ej: Paga el viernes...")
 
             if st.button("💾 GUARDAR PRÉSTAMO", type="primary", use_container_width=True):
                 if cli_final and prod_final:
-                    if cli_sel == "➕ CREAR NUEVO...": 
-                        insertar_registro("clientes", {"nombre": new_cli_n, "tienda": new_cli_t})
-                    if prod_sel == "➕ CREAR NUEVO...": 
-                        insertar_registro("productos", {"nombre": prod_final, "categoria": "Otros", "precio_base": precio})
+                    if cli_sel == "➕ CREAR NUEVO...": insertar_registro("clientes", {"nombre": new_cli_n, "tienda": new_cli_t})
+                    if prod_sel == "➕ CREAR NUEVO...": insertar_registro("productos", {"nombre": prod_final, "categoria": "Otros", "precio_base": precio})
                     
                     insertar_registro("prestamos", {
                         "fecha_registro": datetime.now().strftime("%Y-%m-%d"),
@@ -255,7 +300,7 @@ def main_app():
                         monto = float(cant * r["precio_unitario"])
                         insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "COBRO", "cliente": cli_visita, "producto": r["producto"], "cantidad": cant, "monto_operacion": monto})
                         actualizar_prestamo(r["id"], 0, 0)
-                    st.toast("✅ ¡Cobrado!"); time.sleep(1); st.rerun()
+                    st.toast("✅ ¡Cobro registrado!"); time.sleep(1); st.rerun()
             with c2:
                 if st.button("🔙 DEVOLVER TODO (No vendió)", use_container_width=True):
                     hoy = datetime.now().isoformat()
@@ -263,7 +308,7 @@ def main_app():
                         cant = int(r["cantidad_pendiente"])
                         insertar_registro("historial", {"fecha_evento": hoy, "usuario_responsable": usuario_actual, "tipo": "DEVOLUCION", "cliente": cli_visita, "producto": r["producto"], "cantidad": cant, "monto_operacion": 0})
                         actualizar_prestamo(r["id"], 0, 0)
-                    st.toast("✅ ¡Devuelto!"); time.sleep(1); st.rerun()
+                    st.toast("✅ ¡Devolución registrada!"); time.sleep(1); st.rerun()
 
             st.markdown("---")
             st.write("##### 📝 Gestión Manual")
@@ -284,7 +329,7 @@ def main_app():
             with cp1:
                 if pay_now > 0: st.success(f"💵 PAGA AHORA: **${pay_now:,.2f}**")
             with cp2:
-                if st.button("✅ Procesar", use_container_width=True):
+                if st.button("✅ Procesar Manual", use_container_width=True):
                     hoy = datetime.now().isoformat()
                     p = False
                     for i, r in edited.iterrows():
@@ -374,6 +419,52 @@ def main_app():
                     st.warning("Sin movimientos.")
 
     # ==========================================
+    # ⚠️ NUEVO MÓDULO: ANULAR / CORREGIR
+    # ==========================================
+    elif menu == "⚠️ Anular/Corregir":
+        st.title("⚠️ Corrección de Errores")
+        st.warning("Aquí puedes ANULAR pagos o devoluciones mal registradas. El stock y la deuda se restaurarán.")
+        
+        tab_cor, tab_log = st.tabs(["↩️ Deshacer Movimiento", "📜 Historial de Anulaciones"])
+        
+        with tab_cor:
+            df_hist = cargar_tabla("historial")
+            if not df_hist.empty:
+                # Filtros para encontrar el error rápido
+                col_f1, col_f2 = st.columns(2)
+                filtro_c = col_f1.selectbox("Filtrar Cliente", ["Todos"] + sorted(df_hist["cliente"].unique().tolist()))
+                
+                df_view = df_hist.copy()
+                if filtro_c != "Todos":
+                    df_view = df_view[df_view["cliente"] == filtro_c]
+                
+                # Mostramos los últimos 20 movimientos
+                st.write("Últimos movimientos registrados:")
+                
+                # Iteramos para mostrar botón de eliminar
+                for index, row in df_view.sort_values("fecha_evento", ascending=False).head(20).iterrows():
+                    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
+                    c1.write(f"📅 {row['fecha_evento']}")
+                    c2.write(f"👤 {row['cliente']}")
+                    c3.write(f"📦 {row['producto']} (x{row['cantidad']})")
+                    c4.write(f"💰 {row['tipo']} (${row['monto_operacion']})")
+                    
+                    if c5.button("ANULAR ❌", key=f"del_{row['id']}"):
+                        if anular_movimiento(row['id'], usuario_actual):
+                            st.success("¡Movimiento anulado y stock restaurado!")
+                            time.sleep(1.5)
+                            st.rerun()
+            else:
+                st.info("No hay movimientos para anular.")
+
+        with tab_log:
+            df_anul = cargar_tabla("anulaciones")
+            if not df_anul.empty:
+                st.dataframe(df_anul.sort_values("created_at", ascending=False), use_container_width=True)
+            else:
+                st.info("Aún no se han realizado anulaciones.")
+
+    # ==========================================
     # 📊 MÓDULO 4: REPORTES FINANCIEROS
     # ==========================================
     elif menu == "📊 Reportes Financieros":
@@ -454,14 +545,14 @@ def main_app():
             st.info("Descarga Excel limpia.")
             def clean_csv(df, map_cols): return df.rename(columns=map_cols).to_csv(index=False).encode('utf-8')
             c1, c2 = st.columns(2)
-            
-            # CARGA DE DATOS PARA BACKUP (FIX NAME ERROR)
-            df_p_full = cargar_tabla("prestamos")
-            df_h_full = cargar_tabla("historial")
-            
             if not df_cli.empty: c1.download_button("📥 Clientes", clean_csv(df_cli, {"nombre": "Cliente", "ruc1": "RUC"}), "cli.csv", "text/csv")
+            
+            df_p_full = cargar_tabla("prestamos")
             if not df_p_full.empty: c1.download_button("📥 Préstamos", clean_csv(df_p_full, {"cliente": "Cliente", "total_pendiente": "Deuda"}), "prest.csv", "text/csv")
+            
+            df_h_full = cargar_tabla("historial")
             if not df_h_full.empty: c2.download_button("📥 Historial", clean_csv(df_h_full, {"fecha_evento": "Fecha", "monto_operacion": "Monto"}), "hist.csv", "text/csv")
+            
             if not df_prod.empty: c2.download_button("📥 Productos", clean_csv(df_prod, {"nombre": "Producto"}), "prod.csv", "text/csv")
 
 # --- INICIO ---
