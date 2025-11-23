@@ -73,12 +73,10 @@ def actualizar_prestamo(id_p, cant, total):
     except Exception as e:
         st.error(f"Error actualizando: {e}")
 
-# --- FUNCIONES DE EDICIÓN SEGURA (FIX DUPLICADOS) ---
+# --- FUNCIONES DE EDICIÓN SEGURA ---
 def editar_cliente_global(id_row, datos_nuevos, nombre_anterior):
     try:
-        # 1. Actualizar Maestro
         supabase.table("clientes").update(datos_nuevos).eq("id", id_row).execute()
-        # 2. Actualizar Historial y Préstamos si cambió el nombre
         nuevo_nombre = datos_nuevos.get("nombre")
         if nuevo_nombre and nuevo_nombre != nombre_anterior:
             supabase.table("prestamos").update({"cliente": nuevo_nombre}).eq("cliente", nombre_anterior).execute()
@@ -159,14 +157,13 @@ def main_app():
 
         with st.container(border=True):
             c1, c2 = st.columns(2)
-            
             with c1:
                 st.subheader("1. Cliente")
                 cli_sel = st.selectbox("Buscar Cliente", lista_c)
                 cli_final = None; new_cli_n = None; new_cli_t = None
                 
                 if cli_sel == "➕ CREAR NUEVO...":
-                    st.info("⚡ Alta Rápida de Cliente")
+                    st.info("⚡ Alta Rápida")
                     new_cli_n = st.text_input("Nombre Completo")
                     new_cli_t = st.text_input("Nombre Tienda")
                     cli_final = new_cli_n
@@ -181,10 +178,9 @@ def main_app():
                 st.subheader("2. Producto")
                 prod_sel = st.selectbox("Buscar Producto", lista_p)
                 prod_final = None; pre_sug = 0.0
-                
                 if prod_sel == "➕ CREAR NUEVO...":
-                    st.info("⚡ Alta Rápida de Producto")
-                    prod_final = st.text_input("Descripción Producto")
+                    st.info("⚡ Alta Rápida")
+                    prod_final = st.text_input("Descripción")
                 else:
                     prod_final = prod_sel
                     if not df_prod.empty:
@@ -193,7 +189,7 @@ def main_app():
 
                 cc1, cc2 = st.columns(2)
                 cant = cc1.number_input("Cantidad", 1)
-                precio = cc2.number_input("Precio Unitario ($)", value=pre_sug, step=0.5)
+                precio = cc2.number_input("Precio ($)", value=pre_sug, step=0.5)
             
             st.divider()
             obs = st.text_input("📝 Notas (Opcional)", placeholder="Ej: Paga el viernes...")
@@ -271,7 +267,6 @@ def main_app():
 
             st.markdown("---")
             st.write("##### 📝 Gestión Manual")
-            
             edited = st.data_editor(
                 datos[["id", "producto", "cantidad_pendiente", "precio_unitario", "observaciones", "Cobrar", "Devolver"]],
                 column_config={
@@ -303,7 +298,7 @@ def main_app():
                     if p: st.toast("Procesado"); time.sleep(1); st.rerun()
 
     # ==========================================
-    # 🔍 MÓDULO 3: CONSULTAS (FIX KARDEX INCLUIDO)
+    # 🔍 MÓDULO 3: CONSULTAS
     # ==========================================
     elif menu == "🔍 Consultas y Recibos":
         st.title("🔍 Consultas")
@@ -371,7 +366,6 @@ def main_app():
                 
                 if kardex:
                     df_k = pd.DataFrame(kardex)
-                    # --- FIX FECHAS ---
                     df_k["Fecha"] = pd.to_datetime(df_k["Fecha"], utc=True, errors='coerce')
                     df_k = df_k.sort_values("Fecha", ascending=False)
                     df_k["Fecha"] = df_k["Fecha"].dt.date
@@ -411,7 +405,7 @@ def main_app():
                 st.dataframe(cob.groupby("cliente")["monto_operacion"].sum().sort_values(ascending=False))
 
     # ==========================================
-    # 🛠️ MÓDULO 5: ADMINISTRACIÓN (FIX CASCADA)
+    # 🛠️ MÓDULO 5: ADMINISTRACIÓN
     # ==========================================
     elif menu == "🛠️ Administración":
         st.title("🛠️ Administración")
@@ -437,34 +431,34 @@ def main_app():
                     if st.form_submit_button("Crear Prod"):
                         insertar_registro("productos", {"nombre":n, "categoria":c, "precio_base":p}); st.rerun()
 
-        # --- EDICIÓN CON CASCADA ACTIVADA ---
         with t3:
             mod = st.radio("Editar:", ["Clientes", "Productos"], horizontal=True)
-            
             if mod == "Clientes" and not df_cli.empty:
                 s = st.selectbox("Cli", df_cli["nombre"].unique())
                 d = df_cli[df_cli["nombre"]==s].iloc[0]
                 with st.form("fe"):
                     nn=st.text_input("Nom", d["nombre"]); nt=st.text_input("Tie", d.get("tienda","")); ntel=st.text_input("Tel", d.get("telefono","")); nd=st.text_input("Dir", d.get("direccion","")); nr1=st.text_input("RUC1", d.get("ruc1","")); nr2=st.text_input("RUC2", d.get("ruc2",""))
                     if st.form_submit_button("Actualizar"):
-                        # USAMOS LA FUNCIÓN GLOBAL SEGURA
                         editar_cliente_global(int(d["id"]), {"nombre":nn, "tienda":nt, "telefono":ntel, "direccion":nd, "ruc1":nr1, "ruc2":nr2}, d["nombre"])
                         st.success("Actualizado"); time.sleep(1); st.rerun()
-            
             elif mod == "Productos" and not df_prod.empty:
                 s = st.selectbox("Prod", df_prod["nombre"].unique())
                 d = df_prod[df_prod["nombre"]==s].iloc[0]
                 with st.form("fep"):
-                    nn=st.text_input("Nom", d["nombre"]); np=st.number_input("Pre", float(d["precio_base"]))
+                    nn=st.text_input("Nom", d["nombre"]); np=st.number_input("Pre", float(d["precio_base"])); nc=st.text_input("Cat", d["categoria"])
                     if st.form_submit_button("Actualizar"):
-                        # USAMOS LA FUNCIÓN GLOBAL SEGURA
-                        editar_producto_global(int(d["id"]), {"nombre":nn, "precio_base":np}, d["nombre"])
+                        editar_producto_global(int(d["id"]), {"nombre":nn, "precio_base":np, "categoria":nc}, d["nombre"])
                         st.success("Actualizado"); time.sleep(1); st.rerun()
 
         with t4:
             st.info("Descarga Excel limpia.")
             def clean_csv(df, map_cols): return df.rename(columns=map_cols).to_csv(index=False).encode('utf-8')
             c1, c2 = st.columns(2)
+            
+            # CARGA DE DATOS PARA BACKUP (FIX NAME ERROR)
+            df_p_full = cargar_tabla("prestamos")
+            df_h_full = cargar_tabla("historial")
+            
             if not df_cli.empty: c1.download_button("📥 Clientes", clean_csv(df_cli, {"nombre": "Cliente", "ruc1": "RUC"}), "cli.csv", "text/csv")
             if not df_p_full.empty: c1.download_button("📥 Préstamos", clean_csv(df_p_full, {"cliente": "Cliente", "total_pendiente": "Deuda"}), "prest.csv", "text/csv")
             if not df_h_full.empty: c2.download_button("📥 Historial", clean_csv(df_h_full, {"fecha_evento": "Fecha", "monto_operacion": "Monto"}), "hist.csv", "text/csv")
