@@ -57,6 +57,7 @@ def cargar_tabla(tabla):
             df["fecha_registro"] = pd.to_datetime(df["fecha_registro"]).dt.date
         if "fecha_evento" in df.columns:
             df["fecha_evento"] = pd.to_datetime(df["fecha_evento"])
+        # Eliminamos created_at para limpieza visual, PERO esto causaba el error al ordenar por ella después
         if "created_at" in df.columns:
             df = df.drop(columns=["created_at"])
         return df
@@ -96,10 +97,10 @@ def editar_producto_global(id_row, datos_nuevos, nombre_anterior):
         st.error(f"Error editando producto: {e}")
         return False
 
-# --- NUEVA FUNCIÓN CORREGIDA: REVERTIR MOVIMIENTO ---
+# --- FUNCIÓN REVERTIR MOVIMIENTO ---
 def anular_movimiento(id_historial, usuario_actual):
     try:
-        # 1. Obtener datos del movimiento (CORREGIDO AQUÍ: id_historial)
+        # 1. Obtener datos del movimiento
         resp = supabase.table("historial").select("*").eq("id", id_historial).execute()
         if not resp.data: return False
         dato = resp.data[0]
@@ -109,7 +110,7 @@ def anular_movimiento(id_historial, usuario_actual):
         
         if prestamo.data:
             p = prestamo.data[0]
-            # MATEMÁTICA INVERSA: Devuelve stock o deuda
+            # MATEMÁTICA INVERSA
             nueva_cantidad = p["cantidad_pendiente"] + dato["cantidad"]
             nuevo_total = nueva_cantidad * p["precio_unitario"]
             
@@ -130,11 +131,11 @@ def anular_movimiento(id_historial, usuario_actual):
                 "monto_anulado": dato["monto_operacion"]
             })
             
-            # 4. Borrar del historial oficial (CORREGIDO AQUÍ: id_historial)
+            # 4. Borrar del historial oficial
             supabase.table("historial").delete().eq("id", id_historial).execute()
             return True
         else:
-            st.error("No se encontró el préstamo original. Tal vez se borró o cambió de nombre.")
+            st.error("No se encontró el préstamo original.")
             return False
             
     except Exception as e:
@@ -222,7 +223,6 @@ def main_app():
                 st.subheader("2. Producto")
                 prod_sel = st.selectbox("Buscar Producto", lista_p)
                 prod_final = None; pre_sug = 0.0
-                
                 if prod_sel == "➕ CREAR NUEVO...":
                     st.info("⚡ Alta Rápida")
                     prod_final = st.text_input("Descripción Producto")
@@ -312,7 +312,6 @@ def main_app():
 
             st.markdown("---")
             st.write("##### 📝 Gestión Manual")
-            
             edited = st.data_editor(
                 datos[["id", "producto", "cantidad_pendiente", "precio_unitario", "observaciones", "Cobrar", "Devolver"]],
                 column_config={
@@ -458,7 +457,8 @@ def main_app():
         with tab_log:
             df_anul = cargar_tabla("anulaciones")
             if not df_anul.empty:
-                st.dataframe(df_anul.sort_values("created_at", ascending=False), use_container_width=True)
+                # ORDENAR POR ID PARA EVITAR KEY ERROR DE FECHA
+                st.dataframe(df_anul.sort_values("id", ascending=False), use_container_width=True)
             else:
                 st.info("Aún no se han realizado anulaciones.")
 
@@ -544,7 +544,7 @@ def main_app():
             def clean_csv(df, map_cols): return df.rename(columns=map_cols).to_csv(index=False).encode('utf-8')
             c1, c2 = st.columns(2)
             
-            # CARGA DE DATOS PARA BACKUP (FIX NAME ERROR)
+            # CARGA DATOS PARA BACKUP
             df_p_full = cargar_tabla("prestamos")
             df_h_full = cargar_tabla("historial")
             
