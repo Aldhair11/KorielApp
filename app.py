@@ -592,33 +592,6 @@ def main_app():
                 
                 st.dataframe(df_hs.sort_values("fecha_evento", ascending=False), use_container_width=True)
 
-        with t3:
-            st.info("Historia completa del cliente.")
-            cli_k = st.selectbox("Seleccionar Cliente", sorted(df_cli["nombre"].unique()) if not df_cli.empty else [])
-            if cli_k:
-                df_pk = cargar_tabla("prestamos")
-                df_hk = cargar_tabla("historial")
-                
-                kardex = []
-                if not df_pk.empty:
-                    t = df_pk[df_pk["cliente"]==cli_k]
-                    for i,r in t.iterrows(): 
-                        kardex.append({"Fecha": str(r["fecha_registro"]), "Acción": "🔴 PRÉSTAMO", "Detalle": f"{r['producto']} (Pend: {r['cantidad_pendiente']})"})
-                
-                if not df_hk.empty:
-                    t = df_hk[df_hk["cliente"]==cli_k]
-                    for i,r in t.iterrows(): 
-                        kardex.append({"Fecha": str(r["fecha_evento"]), "Acción": "🟢 PAGO" if r["tipo"]=="COBRO" else "🟡 DEVOLUCIÓN", "Detalle": f"{r['producto']} (Cant: {r['cantidad']} | ${r['monto_operacion']:,.2f})"})
-                
-                if kardex:
-                    df_k = pd.DataFrame(kardex)
-                    df_k["Fecha"] = pd.to_datetime(df_k["Fecha"], utc=True, errors='coerce')
-                    df_k = df_k.sort_values("Fecha", ascending=False)
-                    df_k["Fecha"] = df_k["Fecha"].dt.date
-                    st.dataframe(df_k, use_container_width=True)
-                else:
-                    st.warning("Sin movimientos.")
-
     # ==========================================
     # MÓDULO: ANULAR / CORREGIR (SOLO ADMIN)
     # ==========================================
