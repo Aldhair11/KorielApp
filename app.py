@@ -334,7 +334,6 @@ def main_app():
                 pre_sug = 0.0
                 
                 if prod_sel == "➕ CREAR NUEVO...":
-                    st.info("⚡ Alta Rápida de Producto")
                     prod_final = st.text_input("Descripción Producto")
                 else:
                     prod_final = prod_sel
@@ -450,7 +449,7 @@ def main_app():
             edited = st.data_editor(
                 datos[["id", "producto", "cantidad_pendiente", "precio_unitario", "observaciones", "Cobrar", "Devolver"]],
                 column_config={
-                    "id": st.column_config.NumberColumn(disabled=True),
+                    "id": None,
                     "cantidad_pendiente": st.column_config.NumberColumn("Stock", disabled=True),
                     "precio_unitario": st.column_config.NumberColumn("Precio", format="$%.2f", disabled=True),
                     "observaciones": st.column_config.TextColumn("Notas", disabled=True),
