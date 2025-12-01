@@ -271,10 +271,10 @@ def main_app():
                 "🛠️ Administración"
                 # "🚢 Importaciones" 
             ]
-        else: # Rol usuario (Trabajador)
+        else: # TRABAJADOR: Ve Nuevo Prestamo y el Historial General
             opciones_menu = [
-                "Nuevo Préstamo",
-                "🔍 Consultas y Recibos"
+                "📦 Nuevo Préstamo",
+                "🔍 Consultas y Recibos" 
             ]
             
         menu = st.radio("Navegación del Sistema", opciones_menu)
