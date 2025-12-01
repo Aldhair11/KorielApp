@@ -273,8 +273,8 @@ def main_app():
             ]
         else: # TRABAJADOR: Ve Nuevo Prestamo y el Historial General
             opciones_menu = [
-                "📦 Nuevo Préstamo",
-                "🔍 Consultas y Recibos" 
+                "Nuevo Préstamo",
+                "Consultas y Recibos" 
             ]
             
         menu = st.radio("Navegación del Sistema", opciones_menu)
@@ -392,7 +392,7 @@ def main_app():
             st.warning("No hay registros en el sistema.")
 
     # ==========================================
-    # 📍 MÓDULO: RUTAS Y COBRO (SOLO ADMIN)
+    # MÓDULO: RUTAS Y COBRO (SOLO ADMIN)
     # ==========================================
     elif menu == "Rutas y Cobro":
         st.title("Gestión de Cobranza")
