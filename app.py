@@ -262,13 +262,13 @@ def main_app():
         
         if rol_actual == "admin":
             opciones_menu = [
-                "📦 Nuevo Préstamo", 
-                "📍 Rutas y Cobro", 
-                "🏭 Inventario y Almacenes", 
-                "🔍 Consultas y Recibos", 
-                "⚠️ Anular/Corregir", 
-                "📊 Reportes Financieros", 
-                "🛠️ Administración"
+                "Nuevo Préstamo", 
+                "Rutas y Cobro", 
+                "Inventario y Almacenes", 
+                "Consultas y Recibos", 
+                "Anular/Corregir", 
+                "Reportes Financieros", 
+                "Administración"
                 # "🚢 Importaciones" 
             ]
         else: # TRABAJADOR: Ve Nuevo Prestamo y el Historial General
