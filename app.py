@@ -540,12 +540,13 @@ def main_app():
             if not df_alm.empty: st.dataframe(df_alm["nombre"], use_container_width=True)
 
     # ==========================================
-    # MÓDULO: CONSULTAS Y RECIBOS (SOLO ADMIN)
+    # 🔍 MÓDULO 3: CONSULTAS Y RECIBOS
     # ==========================================
     elif menu == "Consultas y Recibos":
         st.title("Consultas")
         t1, t2 = st.tabs(["Deudas", "Historial"])
         
+        # --- DEUDAS ---
         with t1:
             df_p = cargar_tabla("prestamos")
             if not df_p.empty:
@@ -557,14 +558,33 @@ def main_app():
                 df_s = df_p.copy()
                 hoy = date.today()
                 
+                # Filtros de Fecha
                 if ft == "Hoy": 
                     df_s = df_s[df_s["fecha_registro"].dt.date == hoy] if not df_s["fecha_registro"].empty else df_s
                 elif ft == "Esta Semana": 
                     df_s = df_s[df_s["fecha_registro"].dt.date >= hoy - timedelta(days=hoy.weekday())] if not df_s["fecha_registro"].empty else df_s
+                elif ft == "Este Mes": 
+                     df_s = df_s[df_s["fecha_registro"].dt.date >= hoy.replace(day=1)] if not df_s["fecha_registro"].empty else df_s 
                 
+                # Filtro Cliente
                 if fc: df_s = df_s[df_s["cliente"].isin(fc)]
                 
-                st.dataframe(df_s, use_container_width=True)
+                # ---  ORDEN NUEVO PRIMERO ---
+                df_s = df_s.sort_values("fecha_registro", ascending=False)
+                
+                st.dataframe(
+                    df_s, 
+                    use_container_width=True,
+                    column_config={
+                        "id": None, # Oculta el ID
+                        "fecha_registro": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD"), 
+                        "total_pendiente": st.column_config.NumberColumn("Total Deuda", format="$%.2f"), 
+                        "precio_unitario": st.column_config.NumberColumn("Precio", format="$%.2f"),
+                        "usuario": st.column_config.TextColumn("Vendedor"),
+                        "observaciones": st.column_config.TextColumn("Notas")
+                    }
+                )
+                
                 st.metric("Total Mostrado", f"${df_s['total_pendiente'].sum():,.2f}")
                 
                 if st.button("🖨️ Generar Recibo WhatsApp"):
@@ -572,10 +592,13 @@ def main_app():
                     for c in df_s["cliente"].unique():
                         txt += f"👤 {c}:\n"
                         for i, r in df_s[df_s["cliente"]==c].iterrows():
-                            txt += f" - {r['producto']} (x{r['cantidad_pendiente']}): ${r['total_pendiente']:,.2f}\n"
+                           
+                            fecha_txt = r['fecha_registro'].strftime('%d/%m') if pd.notnull(r['fecha_registro']) else ""
+                            txt += f" - {fecha_txt} | {r['producto']} (x{r['cantidad_pendiente']}): ${r['total_pendiente']:,.2f}\n"
                     txt += f"----------------\n*TOTAL: ${df_s['total_pendiente'].sum():,.2f}*"
                     st.code(txt, language="text")
 
+        # --- PESTAÑA 2: HISTORIAL ---
         with t2:
             df_h = cargar_tabla("historial")
             if not df_h.empty:
@@ -590,7 +613,19 @@ def main_app():
                 if len(fd)==2: 
                     df_hs = df_hs[(df_hs["fecha_evento"].dt.date >= fd[0]) & (df_hs["fecha_evento"].dt.date <= fd[1])]
                 
-                st.dataframe(df_hs.sort_values("fecha_evento", ascending=False), use_container_width=True)
+                # Ordenar historial también (lo último primero)
+                df_hs = df_hs.sort_values("fecha_evento", ascending=False)
+
+                # Visualización limpia del historial
+                st.dataframe(
+                    df_hs, 
+                    use_container_width=True,
+                    column_config={
+                        "id": None,
+                        "fecha_evento": st.column_config.DatetimeColumn("Fecha/Hora", format="DD/MM/YYYY HH:mm"),
+                        "monto_operacion": st.column_config.NumberColumn("Monto", format="$%.2f")
+                    }
+                )
 
     # ==========================================
     # MÓDULO: ANULAR / CORREGIR (SOLO ADMIN)
@@ -681,8 +716,8 @@ def main_app():
                         insertar_registro("clientes", {"nombre":n, "tienda":t, "telefono":tel, "direccion":d, "ruc1":r1, "ruc2":r2}); st.rerun()
             with c2:
                 with st.form("fp"):
-                    n=st.text_input("Producto"); c=st.selectbox("Categoria", ["yableros", "Llaves", "Cables", "Interruptores","Otros"]); p=st.number_input("Precio Base")
-                    if st.form_submit_button("Crear Prod"):
+                    n=st.text_input("Producto"); c=st.selectbox("Categoria", ["Tableros", "Llaves", "Cables", "Interruptores","Otros"]); p=st.number_input("Precio Base")
+                    if st.form_submit_button("Crear Producto"):
                         insertar_registro("productos", {"nombre":n, "categoria":c, "precio_base":p}); st.rerun()
 
         with t3:
@@ -696,7 +731,7 @@ def main_app():
                         editar_cliente_global(int(d["id"]), {"nombre":nn, "tienda":nt, "telefono":ntel, "direccion":nd, "ruc1":nr1, "ruc2":nr2}, d["nombre"])
                         st.success("Actualizado"); time.sleep(1); st.rerun()
             elif mod == "Productos" and not df_prod.empty:
-                s = st.selectbox("Prod", df_prod["nombre"].unique())
+                s = st.selectbox("Productos", df_prod["nombre"].unique())
                 d = df_prod[df_prod["nombre"]==s].iloc[0]
                 with st.form("fep"):
                     nn=st.text_input("Nombre", d["nombre"]); np=st.number_input("Precio", float(d["precio_base"])); nc=st.text_input("Categoria", d["categoria"])
