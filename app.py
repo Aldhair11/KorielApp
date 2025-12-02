@@ -343,7 +343,7 @@ def main_app():
 
                 cc1, cc2 = st.columns(2)
                 cant = cc1.number_input("Cantidad", min_value=1, value=1)
-                precio = cc2.number_input("Precio Unitario", value=pre_sug, step=0.5)
+                precio = cc2.number_input("Precio Unitario", min_value=0.0, value=pre_sug, step=0.5)
             
             st.divider()
             obs = st.text_input("Observaciones / Notas (Opcional)", placeholder="Ej: Paga el fin de semana, entregar sin caja...")
@@ -544,7 +544,7 @@ def main_app():
     # ==========================================
     elif menu == "Consultas y Recibos":
         st.title("Consultas")
-        t1, t2, t3 = st.tabs(["Deudas", "Historial"])
+        t1, t2 = st.tabs(["Deudas", "Historial"])
         
         with t1:
             df_p = cargar_tabla("prestamos")
