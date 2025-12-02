@@ -211,6 +211,39 @@ def anular_movimiento(id_historial, usuario_actual):
     except Exception as e:
         st.error(f"Error al anular: {e}")
         return False
+        
+def corregir_dato_prestamo(id_prestamo, n_prod, n_cant, n_prec, usuario, motivo):
+    try:
+        # 1. Obtener datos viejos
+        res = supabase.table("prestamos").select("*").eq("id", id_prestamo).execute()
+        if not res.data: return False
+        viejo = res.data[0]
+        
+        # 2. Detectar cambios
+        cambios = []
+        if viejo["producto"] != n_prod: cambios.append(f"Prod: {viejo['producto']}->{n_prod}")
+        if viejo["cantidad_pendiente"] != n_cant: cambios.append(f"Cant: {viejo['cantidad_pendiente']}->{n_cant}")
+        if float(viejo["precio_unitario"]) != float(n_prec): cambios.append(f"Pre: {viejo['precio_unitario']}->{n_prec}")
+        
+        if not cambios: return True
+        
+        # 3. Actualizar
+        n_total = n_cant * n_prec
+        supabase.table("prestamos").update({
+            "producto": n_prod, "cantidad_pendiente": n_cant, 
+            "precio_unitario": n_prec, "total_pendiente": n_total
+        }).eq("id", id_prestamo).execute()
+        
+        # 4. Log
+        insertar_registro("bitacora_ediciones", {
+            "fecha_cambio": datetime.now().isoformat(),
+            "usuario_responsable": usuario,
+            "cliente_afectado": viejo["cliente"],
+            "detalle_cambio": " | ".join(cambios),
+            "motivo": motivo
+        })
+        return True
+    except: return False
 
 # ==========================================
 # 5. SISTEMA DE ACCESO (COOKIES)
@@ -658,45 +691,72 @@ def main_app():
     # ==========================================
     elif menu == "Anular/Corregir":
         st.title("Corrección de Errores")
-        st.warning("ANULAR pagos o devoluciones.")
         
-        tab_cor, tab_log = st.tabs(["Deshacer", "Historial"])
+        tab_edit, tab_cor, tab_log = st.tabs(["✏️ Editar Dato", "↩️ Deshacer Movimiento", "📜 Auditoría"])
         
+        # --- PESTAÑA 1: EDICIÓN ---
+        with tab_edit:
+            st.info("Corrige errores de registro.")
+            df_p = cargar_tabla("prestamos")
+            if not df_p.empty:
+                df_p = df_p[df_p["cantidad_pendiente"] > 0] 
+                lista_c = sorted(df_p["cliente"].unique())
+                cli_edit = st.selectbox("Cliente a Corregir", lista_c, key="sel_edit_cli")
+                
+                prestamos_cli = df_p[df_p["cliente"] == cli_edit]
+                
+                for i, r in prestamos_cli.iterrows():
+                    with st.expander(f"{r['fecha_registro']} | {r['producto']} (Cant: {r['cantidad_pendiente']})"):
+                        with st.form(f"form_edit_{r['id']}"):
+                            c1, c2, c3 = st.columns(3)
+                            new_prod = c1.text_input("Producto", value=r["producto"])
+                            new_cant = c2.number_input("Cantidad", value=int(r["cantidad_pendiente"]), min_value=1)
+                            new_prec = c3.number_input("Precio", value=float(r["precio_unitario"]))
+                            reason = st.text_input("Motivo del cambio")
+                            
+                            if st.form_submit_button("💾 Guardar Corrección"):
+                                if reason:
+                                    if corregir_dato_prestamo(r["id"], new_prod, new_cant, new_prec, usuario_actual, reason):
+                                        st.success("Corregido"); time.sleep(1); st.rerun()
+                                else: st.error("Falta motivo.")
+            else: st.warning("No hay préstamos activos.")
+
+        # --- PESTAÑA 2: ANULAR ---
         with tab_cor:
             df_hist = cargar_tabla("historial")
             if not df_hist.empty:
                 c_fil, _ = st.columns(2)
-                filtro_c = c_fil.selectbox("Filtrar por Cliente", ["Todos"] + sorted(df_hist["cliente"].unique().tolist()))
-                
+                filtro_c = c_fil.selectbox("Filtrar Cliente", ["Todos"] + sorted(df_hist["cliente"].unique().tolist()))
                 df_view = df_hist.copy()
                 if filtro_c != "Todos": df_view = df_view[df_view["cliente"] == filtro_c]
                 
-                st.write("Últimos movimientos:")
                 for index, row in df_view.sort_values("fecha_evento", ascending=False).head(20).iterrows():
-                    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
-                    fecha_evento = row['fecha_evento'].strftime("%Y-%m-%d %H:%M") 
-                    c1.write(f"📅 {fecha_evento}")
-                    c2.write(f"👤 {row['cliente']}")
-                    c3.write(f"📦 {row['producto']} (x{row['cantidad']})")
-                    c4.write(f"💰 {row['tipo']} (${row['monto_operacion']})")
-                    
-                    if c5.button("ANULAR ❌", key=f"del_{row['id']}"):
+                    c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+                    fecha_clean = row['fecha_evento'].strftime("%d/%m %H:%M") if pd.notnull(row['fecha_evento']) else ""
+                    c1.write(f"📅 {fecha_clean}")
+                    c2.write(f"{row['cliente']} | {row['producto']}")
+                    c3.write(f"{row['tipo']} (${row['monto_operacion']})")
+                    if c4.button("ANULAR", key=f"del_{row['id']}"):
                         if anular_movimiento(row['id'], usuario_actual):
-                            st.success("¡Anulado!"); time.sleep(1); st.rerun()
+                            st.success("Anulado"); time.sleep(1); st.rerun()
             else: st.info("Sin movimientos.")
 
+        # --- PESTAÑA 3: LOG ---
         with tab_log:
+            st.write("**Historial de Cambios:**")
+            try:
+                # Cargar bitacora (si existe)
+                df_bit = supabase.table("bitacora_ediciones").select("*").execute()
+                df_bit = pd.DataFrame(df_bit.data)
+                if not df_bit.empty:
+                    st.dataframe(df_bit, use_container_width=True)
+            except: pass
+            
+            st.divider()
+            st.write("**Historial de Anulaciones:**")
             df_anul = cargar_tabla("anulaciones")
-            if not df_anul.empty: 
-                st.dataframe(
-                    df_anul.sort_values("id", ascending=False), 
-                    use_container_width=True,
-                    column_config={
-                        "id": None,
-                        "created_at": st.column_config.DatetimeColumn("Fecha Anulación", format="YYYY-MM-DD HH:mm"),
-                        "fecha_error": st.column_config.DateColumn("Fecha Original", format="YYYY-MM-DD")
-                    }
-                )
+            if not df_anul.empty: st.dataframe(df_anul, use_container_width=True)
+                
     # ==========================================
     # MÓDULO: REPORTES (SOLO ADMIN)
     # ==========================================
