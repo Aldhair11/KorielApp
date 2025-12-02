@@ -264,12 +264,12 @@ def main_app():
             opciones_menu = [
                 "Nuevo Préstamo", 
                 "Rutas y Cobro", 
-                "Inventario y Almacenes", 
+                #"Inventario y Almacenes", 
                 "Consultas y Recibos", 
                 "Anular/Corregir", 
                 "Reportes Financieros", 
                 "Administración"
-                # "🚢 Importaciones" 
+                # "Importaciones" 
             ]
         else: # TRABAJADOR: Ve Nuevo Prestamo y el Historial General
             opciones_menu = [
@@ -321,7 +321,7 @@ def main_app():
                     if not df_deudas.empty:
                         deuda = df_deudas[(df_deudas["cliente"] == cli_final)]["total_pendiente"].sum()
                         if deuda > 0:
-                            st.error(f"⚠️ **RIESGO:** Este cliente tiene deuda de **${deuda:,.2f}**")
+                            st.error(f"⚠️ RIESGO: Este cliente tiene deuda de **${deuda:,.2f}**")
                         else:
                             st.success("✅ Cliente al día.")
             
@@ -503,7 +503,7 @@ def main_app():
             else:
                 c1, c2 = st.columns(2)
                 with c1:
-                    tipo_mov = st.selectbox("Tipo Movimiento", ["ENTRADA (Compra)", "SALIDA (A Tienda/Venta)"])
+                    tipo_mov = st.selectbox("Tipo Movimiento", ["ENTRADA ", "SALIDA (Tienda/Venta)"])
                     alm_mov = st.selectbox("Almacén", sorted(df_alm["nombre"].unique()))
                     prod_mov = st.selectbox("Producto", sorted(df_prod["nombre"].unique()) if not df_prod.empty else [])
                 with c2:
@@ -544,7 +544,7 @@ def main_app():
     # ==========================================
     elif menu == "Consultas y Recibos":
         st.title("Consultas")
-        t1, t2, t3 = st.tabs(["Deudas", "Historial", "Kardex Cliente"])
+        t1, t2, t3 = st.tabs(["Deudas", "Historial"])
         
         with t1:
             df_p = cargar_tabla("prestamos")
@@ -676,22 +676,22 @@ def main_app():
             c1, c2 = st.columns(2)
             with c1:
                 with st.form("fc"):
-                    n=st.text_input("Nombre *"); t=st.text_input("Tienda"); tel=st.text_input("Tel"); d=st.text_input("Dir"); r1=st.text_input("RUC1"); r2=st.text_input("RUC2")
+                    n=st.text_input("Nombre"); t=st.text_input("Tienda"); tel=st.text_input("Telefono"); d=st.text_input("Direccion"); r1=st.text_input("RUC1"); r2=st.text_input("RUC2")
                     if st.form_submit_button("Crear Cliente"):
                         insertar_registro("clientes", {"nombre":n, "tienda":t, "telefono":tel, "direccion":d, "ruc1":r1, "ruc2":r2}); st.rerun()
             with c2:
                 with st.form("fp"):
-                    n=st.text_input("Prod *"); c=st.selectbox("Cat", ["Varios", "Focos", "Cables"]); p=st.number_input("Precio Base")
+                    n=st.text_input("Producto"); c=st.selectbox("Categoria", ["yableros", "Llaves", "Cables", "Interruptores","Otros"]); p=st.number_input("Precio Base")
                     if st.form_submit_button("Crear Prod"):
                         insertar_registro("productos", {"nombre":n, "categoria":c, "precio_base":p}); st.rerun()
 
         with t3:
             mod = st.radio("Editar:", ["Clientes", "Productos"], horizontal=True)
             if mod == "Clientes" and not df_cli.empty:
-                s = st.selectbox("Cli", df_cli["nombre"].unique())
+                s = st.selectbox("Cliente", df_cli["nombre"].unique())
                 d = df_cli[df_cli["nombre"]==s].iloc[0]
                 with st.form("fe"):
-                    nn=st.text_input("Nom", d["nombre"]); nt=st.text_input("Tie", d.get("tienda","")); ntel=st.text_input("Tel", d.get("telefono","")); nd=st.text_input("Dir", d.get("direccion","")); nr1=st.text_input("RUC1", d.get("ruc1","")); nr2=st.text_input("RUC2", d.get("ruc2",""))
+                    nn=st.text_input("Nombre", d["nombre"]); nt=st.text_input("Tienda", d.get("tienda","")); ntel=st.text_input("Telefono", d.get("telefono","")); nd=st.text_input("Direccion", d.get("direccion","")); nr1=st.text_input("RUC1", d.get("ruc1","")); nr2=st.text_input("RUC2", d.get("ruc2",""))
                     if st.form_submit_button("Actualizar"):
                         editar_cliente_global(int(d["id"]), {"nombre":nn, "tienda":nt, "telefono":ntel, "direccion":nd, "ruc1":nr1, "ruc2":nr2}, d["nombre"])
                         st.success("Actualizado"); time.sleep(1); st.rerun()
@@ -699,7 +699,7 @@ def main_app():
                 s = st.selectbox("Prod", df_prod["nombre"].unique())
                 d = df_prod[df_prod["nombre"]==s].iloc[0]
                 with st.form("fep"):
-                    nn=st.text_input("Nom", d["nombre"]); np=st.number_input("Pre", float(d["precio_base"])); nc=st.text_input("Cat", d["categoria"])
+                    nn=st.text_input("Nombre", d["nombre"]); np=st.number_input("Precio", float(d["precio_base"])); nc=st.text_input("Categoria", d["categoria"])
                     if st.form_submit_button("Actualizar"):
                         editar_producto_global(int(d["id"]), {"nombre":nn, "precio_base":np, "categoria":nc}, d["nombre"])
                         st.success("Actualizado"); time.sleep(1); st.rerun()
