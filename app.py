@@ -694,34 +694,42 @@ def main_app():
         
         tab_edit, tab_cor, tab_log = st.tabs(["✏️ Editar Dato", "↩️ Deshacer Movimiento", "📜 Auditoría"])
         
-        # --- PESTAÑA 1: EDICIÓN ---
+        # --- PESTAÑA 1: EDITAR (FORMATO FECHA ARREGLADO) ---
         with tab_edit:
-            st.info("Corrige errores de registro.")
+            st.info("Corrige errores de registro en préstamos activos.")
             df_p = cargar_tabla("prestamos")
+            
             if not df_p.empty:
                 df_p = df_p[df_p["cantidad_pendiente"] > 0] 
-                lista_c = sorted(df_p["cliente"].unique())
-                cli_edit = st.selectbox("Cliente a Corregir", lista_c, key="sel_edit_cli")
-                
-                prestamos_cli = df_p[df_p["cliente"] == cli_edit]
-                
-                for i, r in prestamos_cli.iterrows():
-                    with st.expander(f"{r['fecha_registro']} | {r['producto']} (Cant: {r['cantidad_pendiente']})"):
-                        with st.form(f"form_edit_{r['id']}"):
-                            c1, c2, c3 = st.columns(3)
-                            new_prod = c1.text_input("Producto", value=r["producto"])
-                            new_cant = c2.number_input("Cantidad", value=int(r["cantidad_pendiente"]), min_value=1)
-                            new_prec = c3.number_input("Precio", value=float(r["precio_unitario"]))
-                            reason = st.text_input("Motivo del cambio")
-                            
-                            if st.form_submit_button("💾 Guardar Corrección"):
-                                if reason:
-                                    if corregir_dato_prestamo(r["id"], new_prod, new_cant, new_prec, usuario_actual, reason):
-                                        st.success("Corregido"); time.sleep(1); st.rerun()
-                                else: st.error("Falta motivo.")
-            else: st.warning("No hay préstamos activos.")
+                if not df_p.empty:
+                    lista_c = sorted(df_p["cliente"].unique())
+                    cli_edit = st.selectbox("Cliente a Corregir", lista_c, key="sel_edit_cli")
+                    
+                    prestamos_cli = df_p[df_p["cliente"] == cli_edit]
+                    
+                    for i, r in prestamos_cli.iterrows():
+                        # --- FORMATEO DE FECHA PARA QUE SE VEA BIEN EN EL TITULO ---
+                        fecha_bonita = pd.to_datetime(r['fecha_registro']).strftime('%d/%m/%Y')
+                        titulo_expander = f"📅 {fecha_bonita} | 📦 {r['producto']} (Cant: {r['cantidad_pendiente']})"
+                        # -----------------------------------------------------------
 
-        # --- PESTAÑA 2: ANULAR ---
+                        with st.expander(titulo_expander):
+                            with st.form(f"form_edit_{r['id']}"):
+                                c1, c2, c3 = st.columns(3)
+                                new_prod = c1.text_input("Producto", value=r["producto"])
+                                new_cant = c2.number_input("Cantidad", value=int(r["cantidad_pendiente"]), min_value=1)
+                                new_prec = c3.number_input("Precio", value=float(r["precio_unitario"]))
+                                reason = st.text_input("Motivo del cambio")
+                                
+                                if st.form_submit_button("💾 Guardar Corrección"):
+                                    if reason:
+                                        if corregir_dato_prestamo(r["id"], new_prod, new_cant, new_prec, usuario_actual, reason):
+                                            st.success("Corregido"); time.sleep(1); st.rerun()
+                                    else: st.error("Falta motivo.")
+                else: st.warning("Este cliente no tiene préstamos activos.")
+            else: st.warning("No hay datos.")
+
+        # --- PESTAÑA 2: ANULAR (SIN CAMBIOS, YA ESTABA BIEN) ---
         with tab_cor:
             df_hist = cargar_tabla("historial")
             if not df_hist.empty:
@@ -730,6 +738,7 @@ def main_app():
                 df_view = df_hist.copy()
                 if filtro_c != "Todos": df_view = df_view[df_view["cliente"] == filtro_c]
                 
+                st.write("Últimos movimientos:")
                 for index, row in df_view.sort_values("fecha_evento", ascending=False).head(20).iterrows():
                     c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
                     fecha_clean = row['fecha_evento'].strftime("%d/%m %H:%M") if pd.notnull(row['fecha_evento']) else ""
@@ -741,21 +750,45 @@ def main_app():
                             st.success("Anulado"); time.sleep(1); st.rerun()
             else: st.info("Sin movimientos.")
 
-        # --- PESTAÑA 3: LOG ---
+        # --- PESTAÑA 3: LOG (COLUMNAS LIMPIAS) ---
         with tab_log:
-            st.write("**Historial de Cambios:**")
+            st.write("**Historial de Cambios (Bitácora):**")
             try:
-                # Cargar bitacora (si existe)
-                df_bit = supabase.table("bitacora_ediciones").select("*").execute()
-                df_bit = pd.DataFrame(df_bit.data)
+                df_bit = pd.DataFrame(supabase.table("bitacora_ediciones").select("*").execute().data)
                 if not df_bit.empty:
-                    st.dataframe(df_bit, use_container_width=True)
+                    # --- MAQUILLAJE DE TABLA (OCULTAR CREATED_AT Y FORMATEAR FECHA) ---
+                    st.dataframe(
+                        df_bit.sort_values("fecha_cambio", ascending=False),
+                        use_container_width=True,
+                        column_config={
+                            "id": None,          # Ocultar ID
+                            "created_at": None,  # Ocultar Created_at
+                            "fecha_cambio": st.column_config.DatetimeColumn("Fecha", format="DD/MM/YYYY HH:mm"),
+                            "usuario_responsable": "Usuario",
+                            "cliente_afectado": "Cliente",
+                            "detalle_cambio": "Cambios Realizados",
+                            "motivo": "Motivo"
+                        }
+                    )
+                else:
+                    st.info("Nadie ha editado nada aún.")
             except: pass
             
             st.divider()
             st.write("**Historial de Anulaciones:**")
             df_anul = cargar_tabla("anulaciones")
-            if not df_anul.empty: st.dataframe(df_anul, use_container_width=True)
+            if not df_anul.empty: 
+                # Limpieza visual de anulaciones también
+                st.dataframe(
+                    df_anul.sort_values("id", ascending=False), 
+                    use_container_width=True,
+                    column_config={
+                        "id": None,
+                        "created_at": None,
+                        "fecha_error": st.column_config.DateColumn("Fecha Original", format="DD/MM/YYYY"),
+                        "monto_anulado": st.column_config.NumberColumn("Monto", format="$%.2f")
+                    }
+                )
                 
     # ==========================================
     # MÓDULO: REPORTES (SOLO ADMIN)
