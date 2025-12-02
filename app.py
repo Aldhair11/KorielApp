@@ -540,7 +540,7 @@ def main_app():
             if not df_alm.empty: st.dataframe(df_alm["nombre"], use_container_width=True)
 
     # ==========================================
-    # 🔍 MÓDULO 3: CONSULTAS Y RECIBOS
+    # MÓDULO 3: CONSULTAS Y RECIBOS
     # ==========================================
     elif menu == "Consultas y Recibos":
         st.title("Consultas")
@@ -648,7 +648,8 @@ def main_app():
                 st.write("Últimos movimientos:")
                 for index, row in df_view.sort_values("fecha_evento", ascending=False).head(20).iterrows():
                     c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
-                    c1.write(f"📅 {row['fecha_evento']}")
+                    fecha_evento = row['fecha_evento'].strftime("%Y-%m-%d %H:%M") 
+                    c1.write(f"📅 {fecha_evento}")
                     c2.write(f"👤 {row['cliente']}")
                     c3.write(f"📦 {row['producto']} (x{row['cantidad']})")
                     c4.write(f"💰 {row['tipo']} (${row['monto_operacion']})")
@@ -660,8 +661,16 @@ def main_app():
 
         with tab_log:
             df_anul = cargar_tabla("anulaciones")
-            if not df_anul.empty: st.dataframe(df_anul.sort_values("id", ascending=False), use_container_width=True)
-
+            if not df_anul.empty: 
+                st.dataframe(
+                    df_anul.sort_values("id", ascending=False), 
+                    use_container_width=True,
+                    column_config={
+                        "id": None,
+                        "created_at": st.column_config.DatetimeColumn("Fecha Anulación", format="YYYY-MM-DD HH:mm"),
+                        "fecha_error": st.column_config.DateColumn("Fecha Original", format="YYYY-MM-DD")
+                    }
+                )
     # ==========================================
     # MÓDULO: REPORTES (SOLO ADMIN)
     # ==========================================
