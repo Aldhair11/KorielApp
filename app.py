@@ -242,7 +242,7 @@ def check_login():
     st.session_state["usuario_logueado"] = None
     
     st.markdown("<br><br>", unsafe_allow_html=True)
-    st.markdown("<h1 style='text-align: center;'>🔐 GRUPO KORIEL CLOUD</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center;'>GRUPO KORIEL CLOUD</h1>", unsafe_allow_html=True)
     
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
