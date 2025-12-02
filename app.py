@@ -3,6 +3,7 @@ import pandas as pd
 from supabase import create_client
 from datetime import datetime, timedelta, date
 import time
+import extra_streamlit_components as stx
 import json
 import io
 
@@ -212,35 +213,60 @@ def anular_movimiento(id_historial, usuario_actual):
         return False
 
 # ==========================================
-# SISTEMA DE ACCESO (LOGIN)
+# 5. SISTEMA DE ACCESO (COOKIES)
 # ==========================================
+
+# Inicializar el Gestor de Cookies
+def get_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_manager()
+
 def check_login():
+    # Verifica si ya está en Memoria 
     if "usuario_logueado" in st.session_state and st.session_state["usuario_logueado"]:
         return True
     
+    # Verificar si hay Cookie guardada 
+    time.sleep(0.1)
+    cookie_user = cookie_manager.get(cookie="koriel_user_secure")
+    
+    if cookie_user:
+        # Validar que el usuario siga existiendo en tu lista
+        if cookie_user in USUARIOS:
+            st.session_state["usuario_logueado"] = cookie_user
+            st.session_state["rol_usuario"] = USUARIOS[cookie_user]["rol"]
+            return True
+    
+    # Si no hay nada, mostrar pantalla de Login
     st.session_state["usuario_logueado"] = None
-    st.session_state["rol_usuario"] = None 
     
     st.markdown("<br><br>", unsafe_allow_html=True)
-    st.markdown("<h1 style='text-align: center;'>GRUPO KORIEL CLOUD</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center;'>🔐 GRUPO KORIEL CLOUD</h1>", unsafe_allow_html=True)
     
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
         user = st.text_input("Usuario")
         password = st.text_input("Contraseña", type="password")
         
-        if st.button("Ingresar al Sistema", use_container_width=True, type="primary"):
+        if st.button("Ingresar", use_container_width=True, type="primary"):
             if user in USUARIOS and USUARIOS[user]["pass"] == password:
+                # Guarda la sesion
                 st.session_state["usuario_logueado"] = user
-                st.session_state["rol_usuario"] = USUARIOS[user]["rol"] 
+                st.session_state["rol_usuario"] = USUARIOS[user]["rol"]
+                fecha_exp = datetime.now() + timedelta(days=30)
+                cookie_manager.set("koriel_user_secure", user, expires_at=fecha_exp)
+                
                 st.toast(f"¡Bienvenido {user}!")
                 time.sleep(0.5)
                 st.rerun()
             else:
-                st.error("Credenciales incorrectas")
+                st.error("Datos incorrectos")
     return False
 
 def logout():
+    # Borrar cookie y limpiar sesión
+    cookie_manager.delete("koriel_user_secure")
     st.session_state["usuario_logueado"] = None
     st.session_state["rol_usuario"] = None
     st.rerun()
